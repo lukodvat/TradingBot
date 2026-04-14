@@ -1,0 +1,89 @@
+# Default watchlist — ~20 liquid stocks with known Finnhub headline coverage.
+# Sectors capped at 25% of equity (max_sector_pct in settings).
+# Verify Finnhub coverage for each ticker before relying on news triage.
+
+tickers:
+  # Technology (8 tickers)
+  - symbol: AAPL
+    sector: technology
+    name: Apple Inc.
+
+  - symbol: MSFT
+    sector: technology
+    name: Microsoft Corp.
+
+  - symbol: GOOGL
+    sector: technology
+    name: Alphabet Inc.
+
+  - symbol: AMZN
+    sector: technology
+    name: Amazon.com Inc.
+
+  - symbol: NVDA
+    sector: technology
+    name: NVIDIA Corp.
+
+  - symbol: META
+    sector: technology
+    name: Meta Platforms Inc.
+
+  - symbol: AMD
+    sector: technology
+    name: Advanced Micro Devices Inc.
+
+  - symbol: CRM
+    sector: technology
+    name: Salesforce Inc.
+
+  # Finance (3 tickers)
+  - symbol: JPM
+    sector: finance
+    name: JPMorgan Chase & Co.
+
+  - symbol: BAC
+    sector: finance
+    name: Bank of America Corp.
+
+  - symbol: GS
+    sector: finance
+    name: Goldman Sachs Group Inc.
+
+  # Healthcare (3 tickers)
+  - symbol: JNJ
+    sector: healthcare
+    name: Johnson & Johnson
+
+  - symbol: PFE
+    sector: healthcare
+    name: Pfizer Inc.
+
+  - symbol: UNH
+    sector: healthcare
+    name: UnitedHealth Group Inc.
+
+  # Energy (2 tickers)
+  - symbol: XOM
+    sector: energy
+    name: Exxon Mobil Corp.
+
+  - symbol: CVX
+    sector: energy
+    name: Chevron Corp.
+
+  # Consumer (4 tickers)
+  - symbol: HD
+    sector: consumer
+    name: Home Depot Inc.
+
+  - symbol: WMT
+    sector: consumer
+    name: Walmart Inc.
+
+  - symbol: DIS
+    sector: consumer
+    name: Walt Disney Co.
+
+  - symbol: MCD
+    sector: consumer
+    name: McDonald's Corp.

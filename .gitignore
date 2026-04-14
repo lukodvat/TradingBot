@@ -1,0 +1,42 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Data & state
+*.db
+*.db-shm
+*.db-wal
+logs/
+!logs/.gitkeep
+
+# Reports (generated — keep the dir, not the output)
+reports/*.html
+reports/*.json
+reports/*.csv
+!reports/.gitkeep
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
