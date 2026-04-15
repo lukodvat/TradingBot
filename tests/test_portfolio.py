@@ -152,11 +152,14 @@ class TestUnrealizedPct:
 
 class TestManageTrailingStops:
     def test_activates_when_threshold_met(self):
-        s = make_settings(trail_activation_pct=0.015)
+        from alpaca.trading.enums import OrderSide
+        s = make_settings(trail_activation_pct=0.015, trail_pct=0.03)
         pm, broker, _ = make_manager(settings=s)
         pos = make_position(symbol="AAPL", unrealized_plpc=0.02)  # 2% > 1.5%
         count = pm.manage_trailing_stops([pos], run_timestamp="2025-04-13T15:30:00+00:00")
-        broker.replace_stop_with_trailing.assert_called_once_with("AAPL")
+        broker.replace_stop_with_trailing.assert_called_once_with(
+            symbol="AAPL", side=OrderSide.SELL, qty=10.0, trail_pct=0.03
+        )
         assert count == 1
 
     def test_no_activation_below_threshold(self):
@@ -168,12 +171,15 @@ class TestManageTrailingStops:
         assert count == 0
 
     def test_multiple_positions_partial_activation(self):
-        s = make_settings(trail_activation_pct=0.015)
+        from alpaca.trading.enums import OrderSide
+        s = make_settings(trail_activation_pct=0.015, trail_pct=0.03)
         pm, broker, _ = make_manager(settings=s)
         pos_above = make_position(symbol="AAPL", unrealized_plpc=0.02)
         pos_below = make_position(symbol="MSFT", unrealized_plpc=0.005)
         count = pm.manage_trailing_stops([pos_above, pos_below], run_timestamp="ts")
-        broker.replace_stop_with_trailing.assert_called_once_with("AAPL")
+        broker.replace_stop_with_trailing.assert_called_once_with(
+            symbol="AAPL", side=OrderSide.SELL, qty=10.0, trail_pct=0.03
+        )
         assert count == 1
 
     def test_broker_error_does_not_raise(self):
@@ -363,3 +369,107 @@ class TestGetHeldToday:
         conn.commit()
         held = pm.get_held_today(TODAY)
         assert held == {"AAPL"}
+
+
+# ---------------------------------------------------------------------------
+# manage_time_based_exits
+# ---------------------------------------------------------------------------
+
+class TestManageTimeBasedExits:
+    def _seed_entry(self, conn, symbol="AAPL", date=TODAY, side="buy") -> None:
+        conn.execute(
+            """
+            INSERT INTO trades (order_id, symbol, side, qty, fill_price, notional, session, run_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (f"ord_{symbol}_{date}", symbol, side, 10, 100.0, 1000.0,
+             "quant_1030", f"{date}T10:30:00+00:00"),
+        )
+        conn.commit()
+
+    def test_stale_position_with_no_gain_closed(self):
+        """Position held 8 days with 0% gain → closed (max_hold_days=7)."""
+        s = make_settings(max_hold_days=7)
+        pm, broker, conn = make_manager(settings=s)
+
+        entry_date = "2025-04-05"  # 8 days before TODAY (2025-04-13)
+        self._seed_entry(conn, "AAPL", date=entry_date)
+
+        position = make_position("AAPL", unrealized_plpc=0.0)  # no gain
+        run_ts = f"{TODAY}T14:30:00+00:00"
+
+        closed = pm.manage_time_based_exits([position], run_ts)
+        assert closed == 1
+        broker.close_position.assert_called_once_with("AAPL")
+
+    def test_stale_position_up_over_1pct_kept(self):
+        """Position held 8 days but up 2% → NOT closed (hold exception)."""
+        s = make_settings(max_hold_days=7)
+        pm, broker, conn = make_manager(settings=s)
+
+        entry_date = "2025-04-05"
+        self._seed_entry(conn, "AAPL", date=entry_date)
+
+        position = make_position("AAPL", unrealized_plpc=0.02)  # up 2%
+        run_ts = f"{TODAY}T14:30:00+00:00"
+
+        closed = pm.manage_time_based_exits([position], run_ts)
+        assert closed == 0
+        broker.close_position.assert_not_called()
+
+    def test_fresh_position_not_closed(self):
+        """Position held 2 days (below max_hold_days=7) → not touched."""
+        s = make_settings(max_hold_days=7)
+        pm, broker, conn = make_manager(settings=s)
+
+        entry_date = "2025-04-11"  # 2 days before TODAY
+        self._seed_entry(conn, "AAPL", date=entry_date)
+
+        position = make_position("AAPL", unrealized_plpc=0.0)
+        run_ts = f"{TODAY}T14:30:00+00:00"
+
+        closed = pm.manage_time_based_exits([position], run_ts)
+        assert closed == 0
+        broker.close_position.assert_not_called()
+
+    def test_no_entry_record_skipped_gracefully(self):
+        """Position with no matching trade in DB → skipped without error."""
+        s = make_settings(max_hold_days=7)
+        pm, broker, conn = make_manager(settings=s)
+        # No trade seeded for AAPL
+
+        position = make_position("AAPL", unrealized_plpc=0.0)
+        run_ts = f"{TODAY}T14:30:00+00:00"
+
+        closed = pm.manage_time_based_exits([position], run_ts)
+        assert closed == 0
+
+    def test_exactly_at_threshold_closed(self):
+        """Position held exactly max_hold_days (7) → closed."""
+        s = make_settings(max_hold_days=7)
+        pm, broker, conn = make_manager(settings=s)
+
+        entry_date = "2025-04-06"  # exactly 7 days before TODAY
+        self._seed_entry(conn, "AAPL", date=entry_date)
+
+        position = make_position("AAPL", unrealized_plpc=0.005)  # 0.5% — below 1%
+        run_ts = f"{TODAY}T14:30:00+00:00"
+
+        closed = pm.manage_time_based_exits([position], run_ts)
+        assert closed == 1
+
+    def test_multiple_positions_independent(self):
+        """Stale + fresh positions in same run — only stale one is closed."""
+        s = make_settings(max_hold_days=7)
+        pm, broker, conn = make_manager(settings=s)
+
+        self._seed_entry(conn, "AAPL", date="2025-04-05")   # 8 days — stale
+        self._seed_entry(conn, "MSFT", date="2025-04-11")   # 2 days — fresh
+
+        stale = make_position("AAPL", unrealized_plpc=0.0)
+        fresh = make_position("MSFT", unrealized_plpc=0.0)
+        run_ts = f"{TODAY}T14:30:00+00:00"
+
+        closed = pm.manage_time_based_exits([stale, fresh], run_ts)
+        assert closed == 1
+        broker.close_position.assert_called_once_with("AAPL")

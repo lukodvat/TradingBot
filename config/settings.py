@@ -109,14 +109,17 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # News / data fetching
     # -------------------------------------------------------------------------
+    news_lookback_premarket_hours: int = Field(
+        default=8, description="Hours of headline lookback for 09:00 ET pre-market run (overnight news)"
+    )
     news_lookback_morning_hours: int = Field(
-        default=4, description="Hours of headline lookback for 10:30 ET run"
+        default=24, description="Hours of headline lookback for 10:00 ET morning run (full prior-day narrative)"
     )
     news_lookback_afternoon_hours: int = Field(
-        default=2, description="Hours of headline lookback for 15:30 ET run"
+        default=4, description="Hours of headline lookback for 13:00 ET midday run"
     )
     max_news_age_hours: int = Field(
-        default=6, description="Headlines older than this are discarded before triage"
+        default=28, description="Headlines older than this are discarded before triage (covers 24h morning lookback + buffer)"
     )
 
     # -------------------------------------------------------------------------
@@ -154,6 +157,67 @@ class Settings(BaseSettings):
     )
     backtest_slippage_bps: int = Field(
         default=10, description="Slippage model applied to every fill (basis points)"
+    )
+
+    # -------------------------------------------------------------------------
+    # Market regime filter (SPY trend + volatility gate)
+    # -------------------------------------------------------------------------
+    spy_ema_short: int = Field(
+        default=50, description="EMA period for SPY trend gate (CAUTION threshold)"
+    )
+    spy_ema_long: int = Field(
+        default=200, description="EMA period for SPY trend gate (BEAR/halt threshold)"
+    )
+    vol_regime_threshold: float = Field(
+        default=0.30,
+        description="SPY 20-day annualised vol above which to cap max positions",
+    )
+    vol_regime_max_positions: int = Field(
+        default=2, description="Max positions when vol_regime_threshold is breached"
+    )
+
+    # -------------------------------------------------------------------------
+    # Earnings calendar blackout
+    # -------------------------------------------------------------------------
+    earnings_blackout_days: int = Field(
+        default=2,
+        description="Skip tickers with earnings within this many calendar days",
+    )
+
+    # -------------------------------------------------------------------------
+    # Exit improvements
+    # -------------------------------------------------------------------------
+    take_profit_pct: float = Field(
+        default=0.03,
+        description="Take-profit target as fraction of entry price (3% = close at +3%)",
+    )
+    max_hold_days: int = Field(
+        default=7,
+        description="Close stale positions held longer than this with <1% gain (calendar days)",
+    )
+
+    # -------------------------------------------------------------------------
+    # Signal quality improvements
+    # -------------------------------------------------------------------------
+    require_relative_strength: bool = Field(
+        default=True,
+        description="Long entries require ticker to outperform SPY over 20 days",
+    )
+    near_high_lookback: int = Field(
+        default=63,
+        description="Rolling window (bars) for the near-high proximity filter",
+    )
+    near_high_max_drawdown: float = Field(
+        default=0.10,
+        description="Max allowed distance below the rolling high (10% = within 10% of high)",
+    )
+
+    # -------------------------------------------------------------------------
+    # Macro event blackout
+    # -------------------------------------------------------------------------
+    macro_events_path: str = Field(
+        default="config/macro_events.yaml",
+        description="Path to YAML file listing high-impact macro event dates",
     )
 
     # -------------------------------------------------------------------------

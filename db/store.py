@@ -247,6 +247,15 @@ def get_pending_orders(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 # Trades
 # ---------------------------------------------------------------------------
 
+def trade_exists(conn: sqlite3.Connection, order_id: str) -> bool:
+    """Return True if a trade with this order_id has already been recorded."""
+    row = conn.execute(
+        "SELECT 1 FROM trades WHERE order_id = ? LIMIT 1",
+        (order_id,),
+    ).fetchone()
+    return row is not None
+
+
 def record_trade(
     conn: sqlite3.Connection,
     *,
@@ -457,7 +466,12 @@ def get_sentiment_bias(
         SELECT bias, aggregated_score, headline_count, llm_run, updated_at
         FROM sentiment_bias
         WHERE ticker = ? AND date = ?
-        ORDER BY CASE llm_run WHEN 'midday' THEN 0 ELSE 1 END
+        ORDER BY CASE llm_run
+            WHEN 'midday'    THEN 0
+            WHEN 'morning'   THEN 1
+            WHEN 'premarket' THEN 2
+            ELSE 3
+        END
         LIMIT 1
         """,
         (ticker, date),
@@ -478,7 +492,15 @@ def get_all_sentiment_biases_for_date(
         SELECT ticker, bias
         FROM (
             SELECT ticker, bias,
-                   ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY llm_run DESC) AS rn
+                   ROW_NUMBER() OVER (
+                       PARTITION BY ticker
+                       ORDER BY CASE llm_run
+                           WHEN 'midday'    THEN 0
+                           WHEN 'morning'   THEN 1
+                           WHEN 'premarket' THEN 2
+                           ELSE 3
+                       END
+                   ) AS rn
             FROM sentiment_bias
             WHERE date = ?
         )

@@ -54,9 +54,9 @@ tickers:
     sector: healthcare
     name: Johnson & Johnson
 
-  - symbol: PFE
+  - symbol: AMGN
     sector: healthcare
-    name: Pfizer Inc.
+    name: Amgen Inc.
 
   - symbol: UNH
     sector: healthcare
@@ -80,9 +80,9 @@ tickers:
     sector: consumer
     name: Walmart Inc.
 
-  - symbol: DIS
+  - symbol: TSLA
     sector: consumer
-    name: Walt Disney Co.
+    name: Tesla Inc.
 
   - symbol: MCD
     sector: consumer

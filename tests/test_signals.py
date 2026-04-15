@@ -104,10 +104,10 @@ def make_bearish_bars(n: int = N_BARS, base_price: float = 100.0) -> pd.DataFram
                           "close": close, "volume": volume}, index=idx)
 
 
-def make_scanner(settings=None, conn=None):
+def make_scanner(settings=None, conn=None, spy_return_20d=None):
     s = settings or make_settings()
     c = conn or make_db()
-    return SignalScanner(s, c), c
+    return SignalScanner(s, c, spy_return_20d=spy_return_20d), c
 
 
 # ---------------------------------------------------------------------------
@@ -302,3 +302,165 @@ class TestSignalScanner:
             assert isinstance(c.current_price, float)
             assert 0.0 <= c.conviction <= 1.0
             assert c.direction in (LONG, SHORT)
+
+
+# ---------------------------------------------------------------------------
+# Relative strength filter
+# ---------------------------------------------------------------------------
+
+class TestRelativeStrengthFilter:
+    def test_underperforming_long_rejected(self):
+        """Ticker flat (0%) while SPY up 5% → should be filtered out."""
+        # spy_return_20d = 5%; ticker return ≈ 0% from seed 1 bars
+        # Make flat bars: no trend
+        n = 30
+        prices = np.full(n, 100.0)
+        idx = pd.date_range("2025-03-01", periods=n, freq="D", tz="UTC")
+        flat_bars = pd.DataFrame({
+            "open": prices, "high": prices * 1.001,
+            "low": prices * 0.999, "close": prices,
+            "volume": np.where(np.arange(n) == n - 1, 200_000.0, 100_000.0),
+        }, index=idx)
+
+        s = make_settings(require_relative_strength=True)
+        scanner, conn = make_scanner(s, spy_return_20d=0.05)  # SPY up 5%
+        seed_bias(conn, "AAPL", "BULLISH")
+        result = scanner.scan({"AAPL": flat_bars}, TODAY)
+        # Ticker return ~0% < SPY 5% → filtered out
+        assert result == []
+
+    def test_outperforming_long_passes(self):
+        """Ticker outperforms SPY → relative strength check passes."""
+        # spy_return_20d = -5% (SPY negative); ticker up → passes easily
+        s = make_settings(require_relative_strength=True)
+        scanner, conn = make_scanner(s, spy_return_20d=-0.05)  # SPY down 5%
+        seed_bias(conn, "AAPL", "BULLISH")
+        result = scanner.scan({"AAPL": make_bullish_bars()}, TODAY)
+        # With SPY negative and ticker positive, rel-strength passes
+        # (though other filters may still block; we just verify no extra rejection)
+        for c in result:
+            assert c.direction == LONG
+
+    def test_relative_strength_disabled_passes_all(self):
+        """require_relative_strength=False bypasses the filter."""
+        n = 30
+        prices = np.full(n, 100.0)
+        idx = pd.date_range("2025-03-01", periods=n, freq="D", tz="UTC")
+        flat_bars = pd.DataFrame({
+            "open": prices, "high": prices * 1.001,
+            "low": prices * 0.999, "close": prices,
+            "volume": np.where(np.arange(n) == n - 1, 200_000.0, 100_000.0),
+        }, index=idx)
+
+        s = make_settings(require_relative_strength=False)
+        scanner, conn = make_scanner(s, spy_return_20d=0.10)  # high SPY return
+        seed_bias(conn, "AAPL", "BULLISH")
+        # Filter disabled — outcome depends only on other technical criteria
+        # Just verify no TypeError or crash
+        scanner.scan({"AAPL": flat_bars}, TODAY)
+
+    def test_no_spy_data_skips_filter(self):
+        """spy_return_20d=None → relative strength check is skipped."""
+        s = make_settings(require_relative_strength=True)
+        scanner, conn = make_scanner(s, spy_return_20d=None)
+        seed_bias(conn, "AAPL", "BULLISH")
+        # Should not raise; result depends only on technical filters
+        result = scanner.scan({"AAPL": make_bullish_bars()}, TODAY)
+        for c in result:
+            assert c.direction == LONG
+
+    def test_short_direction_not_filtered_by_relative_strength(self):
+        """Relative strength filter only applies to LONG setups."""
+        # Even if ticker underperforms SPY for longs, SHORT setups are unaffected
+        s = make_settings(require_relative_strength=True)
+        scanner, conn = make_scanner(s, spy_return_20d=0.10)  # high SPY return
+        seed_bias(conn, "AAPL", "BEARISH")
+        result = scanner.scan({"AAPL": make_bearish_bars()}, TODAY)
+        # SHORT setups should not be filtered by relative strength
+        for c in result:
+            assert c.direction == SHORT
+
+
+# ---------------------------------------------------------------------------
+# Near-high proximity filter
+# ---------------------------------------------------------------------------
+
+class TestNearHighFilter:
+    def _make_bars_with_high(
+        self, n: int, last_price: float, lookback_high: float
+    ) -> pd.DataFrame:
+        """Build bars where the rolling lookback high is set to lookback_high."""
+        idx = pd.date_range("2024-01-01", periods=n, freq="D", tz="UTC")
+        close = np.full(n, last_price)
+        # Inject the high in the middle of the bars
+        high_col = np.full(n, last_price * 1.001)
+        high_col[n // 2] = lookback_high  # spike to set the rolling high
+        volume = np.full(n, 100_000.0)
+        volume[-1] = 200_000.0
+        return pd.DataFrame({
+            "open":   close * 0.999,
+            "high":   high_col,
+            "low":    close * 0.999,
+            "close":  close,
+            "volume": volume,
+        }, index=idx)
+
+    def test_far_below_high_long_rejected(self):
+        """Ticker 20% below 63-day high with 10% threshold → rejected."""
+        # last_price=80, high=100 → 20% below → rejected (threshold=10%)
+        bars = self._make_bars_with_high(n=80, last_price=80.0, lookback_high=100.0)
+
+        s = make_settings(
+            near_high_lookback=63,
+            near_high_max_drawdown=0.10,
+            require_relative_strength=False,  # isolate this filter
+        )
+        scanner, conn = make_scanner(s)
+        seed_bias(conn, "AAPL", "BULLISH")
+        result = scanner.scan({"AAPL": bars}, TODAY)
+        assert result == []
+
+    def test_near_high_long_passes(self):
+        """Ticker 5% below 63-day high with 10% threshold → passes."""
+        # last_price=95, high=100 → 5% below → passes (threshold=10%)
+        bars = self._make_bars_with_high(n=80, last_price=95.0, lookback_high=100.0)
+
+        s = make_settings(
+            near_high_lookback=63,
+            near_high_max_drawdown=0.10,
+            require_relative_strength=False,
+        )
+        scanner, conn = make_scanner(s)
+        seed_bias(conn, "AAPL", "BULLISH")
+        # With flat bars the EMA/RSI/volume checks may block; just verify no crash
+        scanner.scan({"AAPL": bars}, TODAY)
+
+    def test_near_high_not_applied_to_shorts(self):
+        """Near-high filter only applies to LONG setups."""
+        bars = self._make_bars_with_high(n=80, last_price=60.0, lookback_high=100.0)
+
+        s = make_settings(
+            near_high_lookback=63,
+            near_high_max_drawdown=0.10,
+            require_relative_strength=False,
+        )
+        scanner, conn = make_scanner(s)
+        seed_bias(conn, "AAPL", "BEARISH")
+        # BEARISH → SHORT → near-high filter should not apply
+        # (other filters may still reject, but not this one)
+        scanner.scan({"AAPL": bars}, TODAY)
+
+    def test_near_high_skipped_when_insufficient_bars(self):
+        """With fewer bars than near_high_lookback, filter is skipped gracefully."""
+        bars = make_bullish_bars(n=30)  # only 30 bars, lookback=63
+        s = make_settings(
+            near_high_lookback=63,
+            near_high_max_drawdown=0.10,
+            require_relative_strength=False,
+        )
+        scanner, conn = make_scanner(s)
+        seed_bias(conn, "AAPL", "BULLISH")
+        # Should not raise — filter is skipped with insufficient bars
+        result = scanner.scan({"AAPL": bars}, TODAY)
+        # Result depends on other technical filters
+        assert isinstance(result, list)

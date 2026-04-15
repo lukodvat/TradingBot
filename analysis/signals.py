@@ -55,13 +55,19 @@ class SignalScanner:
     Stateless quant signal scanner for Job B.
 
     Usage:
-        scanner = SignalScanner(settings, conn)
+        scanner = SignalScanner(settings, conn, spy_return_20d=spy_ret)
         candidates = scanner.scan(bars, date="2025-04-13", held_today={"AAPL"})
     """
 
-    def __init__(self, settings: Settings, conn: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        conn: sqlite3.Connection,
+        spy_return_20d: Optional[float] = None,
+    ) -> None:
         self._s = settings
         self._conn = conn
+        self._spy_return_20d = spy_return_20d  # used for relative-strength filter
 
     def scan(
         self,
@@ -172,6 +178,32 @@ class SignalScanner:
             return None
 
         direction = LONG if bias == "BULLISH" else SHORT
+
+        # --- Relative strength vs SPY (longs only) ---
+        if (
+            s.require_relative_strength
+            and self._spy_return_20d is not None
+            and len(close) >= 21
+        ):
+            ticker_20d = (float(close.iloc[-1]) - float(close.iloc[-21])) / float(close.iloc[-21])
+            if direction == LONG and ticker_20d <= self._spy_return_20d:
+                log.debug(
+                    "SKIP %s — relative strength %.2f%% <= SPY %.2f%%",
+                    symbol, ticker_20d * 100, self._spy_return_20d * 100,
+                )
+                return None
+
+        # --- Near-high proximity filter (longs only; only when enough bars) ---
+        lookback = s.near_high_lookback
+        if direction == LONG and len(df) >= lookback:
+            high_n = float(df["high"].iloc[-lookback:].max())
+            if high_n > 0 and price < high_n * (1 - s.near_high_max_drawdown):
+                log.debug(
+                    "SKIP %s — price %.2f is >%.0f%% below %d-day high %.2f",
+                    symbol, price, s.near_high_max_drawdown * 100, lookback, high_n,
+                )
+                return None
+
         conviction = _compute_conviction(rsi_val, volume_ratio, direction, s)
 
         log.info(

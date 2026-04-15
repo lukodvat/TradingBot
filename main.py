@@ -36,11 +36,12 @@ from core.risk import RiskManager
 from data.market import MarketDataClient, load_watchlist, load_sector_map
 from data.news import FinnhubProvider, fetch_all_headlines
 from db import store, schema
+from analysis.regime import MarketRegimeFilter
 from analysis.sentiment import SentimentAnalyzer
 from analysis.signals import SignalScanner
 from analysis.volatility import filter_watchlist, passing_tickers
 from backtest.harness import check_backtest_gate
-from notifications.email import send_daily_email
+from notifications.email import send_daily_email, send_circuit_breaker_alert
 from llm.budget import assert_budget_ok
 from llm.client import LLMClient
 
@@ -52,9 +53,40 @@ _ET = ZoneInfo("America/New_York")
 # NYSE calendar helpers
 # ---------------------------------------------------------------------------
 
+# NYSE-observed holidays for 2025 and 2026.
+# Dates are YYYY-MM-DD strings in ET.
+_NYSE_HOLIDAYS: frozenset[str] = frozenset({
+    # 2025
+    "2025-01-01",  # New Year's Day
+    "2025-01-20",  # Martin Luther King Jr. Day
+    "2025-02-17",  # Presidents' Day
+    "2025-04-18",  # Good Friday
+    "2025-05-26",  # Memorial Day
+    "2025-06-19",  # Juneteenth
+    "2025-07-04",  # Independence Day
+    "2025-09-01",  # Labor Day
+    "2025-11-27",  # Thanksgiving
+    "2025-12-25",  # Christmas
+    # 2026
+    "2026-01-01",  # New Year's Day
+    "2026-01-19",  # Martin Luther King Jr. Day
+    "2026-02-16",  # Presidents' Day
+    "2026-04-03",  # Good Friday
+    "2026-05-25",  # Memorial Day
+    "2026-06-19",  # Juneteenth
+    "2026-07-03",  # Independence Day (observed, falls on Friday)
+    "2026-09-07",  # Labor Day
+    "2026-11-26",  # Thanksgiving
+    "2026-12-25",  # Christmas
+})
+
+
 def _is_market_day(dt: datetime) -> bool:
-    """True if dt falls on a Mon-Fri (no holiday detection in v1)."""
-    return dt.astimezone(_ET).weekday() < 5  # 0=Mon … 4=Fri
+    """True if dt falls on a Mon-Fri that is not an NYSE holiday."""
+    et = dt.astimezone(_ET)
+    if et.weekday() >= 5:  # Saturday or Sunday
+        return False
+    return et.strftime("%Y-%m-%d") not in _NYSE_HOLIDAYS
 
 
 def _is_within_trading_hours(dt: datetime, settings: Settings) -> bool:
@@ -72,6 +104,103 @@ def _is_within_trading_hours(dt: datetime, settings: Settings) -> bool:
 
 def _is_friday(dt: datetime) -> bool:
     return dt.astimezone(_ET).weekday() == 4
+
+
+def _load_macro_blackout_dates(path: str) -> set[str]:
+    """Load YYYY-MM-DD blackout dates from macro_events.yaml."""
+    import yaml
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        return {str(e["date"]) for e in data.get("events", []) if "date" in e}
+    except Exception as exc:
+        log.warning("Could not load macro events from %s: %s", path, exc)
+        return set()
+
+
+def _is_macro_blackout(date_str: str, path: str) -> bool:
+    """Return True if date_str (YYYY-MM-DD) is a macro event blackout day."""
+    blackout_dates = _load_macro_blackout_dates(path)
+    return date_str in blackout_dates
+
+
+def _compute_spy_return_20d(spy_bars) -> float | None:
+    """Return SPY's 20-day price return as a fraction, or None if not enough data."""
+    if spy_bars is None or len(spy_bars) < 21:
+        return None
+    close = spy_bars["close"]
+    try:
+        ret = (float(close.iloc[-1]) - float(close.iloc[-21])) / float(close.iloc[-21])
+        return ret
+    except (ZeroDivisionError, IndexError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Fill reconciliation (populates trades table from Alpaca filled orders)
+# ---------------------------------------------------------------------------
+
+def reconcile_fills(broker: BrokerClient, conn, run_timestamp: str) -> int:
+    """
+    Poll Alpaca for orders filled in the last 24 hours and upsert them into
+    the trades table.  This is the canonical way the trades table gets
+    populated — main.py only inserts into orders at submission time.
+
+    Returns the number of new trade rows inserted.
+    """
+    from datetime import timedelta
+
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    filled_orders = broker.get_filled_orders_since(since)
+    inserted = 0
+
+    for order in filled_orders:
+        order_id = str(order.id)
+        if store.trade_exists(conn, order_id):
+            continue
+
+        symbol = str(order.symbol)
+        side_raw = str(order.side).lower()  # 'buy' or 'sell'
+        qty = float(order.filled_qty or 0)
+        fill_price = float(order.filled_avg_price or 0)
+        limit_price = float(order.limit_price) if order.limit_price else None
+        stop_price = float(order.stop_price) if order.stop_price else None
+        notional = qty * fill_price
+        filled_at = (
+            order.filled_at.isoformat()
+            if order.filled_at else None
+        )
+
+        store.record_trade(
+            conn,
+            order_id=order_id,
+            symbol=symbol,
+            side=side_raw,
+            qty=qty,
+            fill_price=fill_price,
+            limit_price=limit_price,
+            stop_price=stop_price,
+            notional=notional,
+            session=run_timestamp[:13],   # 'YYYY-MM-DDTHH' is sufficient
+            run_timestamp=run_timestamp,
+            filled_at=filled_at,
+        )
+
+        # Keep orders table in sync
+        store.update_order_status(
+            conn,
+            order_id=order_id,
+            status="filled",
+            fill_price=fill_price,
+            filled_at=filled_at,
+        )
+
+        log.info("Reconciled fill: %s %s x%.2f @ %.2f", side_raw, symbol, qty, fill_price)
+        inserted += 1
+
+    if inserted:
+        log.info("reconcile_fills: inserted %d new trade rows", inserted)
+    return inserted
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +238,12 @@ def run_llm_job(
         return
 
     # News fetch
-    lookback = (
-        settings.news_lookback_morning_hours
-        if llm_run == "morning"
-        else settings.news_lookback_afternoon_hours
-    )
+    lookback_map = {
+        "premarket": settings.news_lookback_premarket_hours,  # 9:00 ET — overnight news
+        "morning":   settings.news_lookback_morning_hours,    # 10:00 ET — full prior-day narrative
+        "midday":    settings.news_lookback_afternoon_hours,  # 13:00 ET — intraday update
+    }
+    lookback = lookback_map.get(llm_run, settings.news_lookback_morning_hours)
     symbols = load_watchlist(settings.watchlist_path)
     raw_headlines = fetch_all_headlines(
         news_provider, symbols, lookback_hours=lookback
@@ -173,6 +303,7 @@ def run_quant_job(
     broker: BrokerClient,
     risk: RiskManager,
     market_data: MarketDataClient,
+    news_provider,
     conn,
 ) -> None:
     """
@@ -195,6 +326,9 @@ def run_quant_job(
         log.info("Job B skipped — outside trading hours")
         return
 
+    # Fill reconciliation — populate trades table from Alpaca filled orders
+    reconcile_fills(broker, conn, run_timestamp)
+
     # Account snapshot
     snap = broker.snapshot()
 
@@ -208,16 +342,24 @@ def run_quant_job(
         broker.close_all_positions()
         store.update_session_log(conn, run_timestamp=run_timestamp,
                                  circuit_breaker_triggered=1)
+        send_circuit_breaker_alert(settings, cb.daily_pnl_pct, snap.equity)
         return
 
-    # Position management — trailing stops and flattens
+    # Position management — trailing stops, time-based exits, and flattens
     pm = PortfolioManager(settings, broker, risk, conn)
     positions = snap.positions
 
     pm.manage_trailing_stops(positions, run_timestamp)
+    pm.manage_time_based_exits(positions, run_timestamp)
 
     # Load today's biases for flatten decisions
     biases = store.get_all_sentiment_biases_for_date(conn, today_str)
+    if not biases:
+        log.warning(
+            "Job B [%s]: no sentiment biases found for %s — "
+            "Job A may not have run yet. All tickers will be treated as NEUTRAL.",
+            session, today_str,
+        )
     minutes_to_close = _minutes_to_market_close(run_dt)
     is_flatten_window = minutes_to_close <= settings.flatten_before_close_minutes
 
@@ -231,10 +373,43 @@ def run_quant_job(
     # Same-ticker cooldown
     held_today = pm.get_held_today(today_str)
 
-    # Fetch OHLCV for all watchlist tickers
+    # Fetch OHLCV for all watchlist tickers + SPY (80 days for regime/near-high/rel-strength)
     symbols = load_watchlist(settings.watchlist_path)
     sector_map = load_sector_map(settings.watchlist_path)
-    bars = market_data.get_daily_bars(symbols, lookback_days=25)
+    all_symbols = list(set(symbols + ["SPY"]))
+    all_bars = market_data.get_daily_bars(all_symbols, lookback_days=80)
+
+    spy_bars = all_bars.pop("SPY", None)
+    bars = {sym: all_bars[sym] for sym in symbols if sym in all_bars}
+
+    # Macro event blackout — block new entries but let position management continue
+    if _is_macro_blackout(today_str, settings.macro_events_path):
+        log.info("Job B: macro blackout day (%s) — skipping signal scan", today_str)
+        snap = broker.snapshot()
+        pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
+        store.update_session_log(conn, run_timestamp=run_timestamp,
+                                 tickers_evaluated=0, orders_submitted=0)
+        return
+
+    # Market regime filter
+    regime = MarketRegimeFilter(settings).evaluate(spy_bars)
+    spy_return_20d = _compute_spy_return_20d(spy_bars)
+
+    if not regime.allow_any_entries:
+        log.info("Job B: regime=%s — no new entries this run", regime.label)
+        snap = broker.snapshot()
+        pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
+        store.update_session_log(conn, run_timestamp=run_timestamp,
+                                 tickers_evaluated=0, orders_submitted=0)
+        return
+
+    # Earnings blackout — filter out tickers with upcoming earnings
+    earnings_blackout = news_provider.get_upcoming_earnings(
+        symbols, days_ahead=settings.earnings_blackout_days
+    )
+    if earnings_blackout:
+        symbols = [s for s in symbols if s not in earnings_blackout]
+        bars = {s: v for s, v in bars.items() if s not in earnings_blackout}
 
     # Volatility filter
     vol_results = filter_watchlist(bars, settings)
@@ -255,17 +430,36 @@ def run_quant_job(
     passing_bars = {sym: bars[sym] for sym in passing if sym in bars}
     log.info("Vol filter: %d/%d tickers pass", len(passing), len(symbols))
 
-    # Signal scan
-    scanner = SignalScanner(settings, conn)
+    # Signal scan (with relative strength and near-high filters active)
+    scanner = SignalScanner(settings, conn, spy_return_20d=spy_return_20d)
     candidates = scanner.scan(passing_bars, date=today_str, held_today=held_today)
-    log.info("Signals: %d candidates", len(candidates))
+
+    # Apply regime direction filter
+    if not regime.allow_long_entries:
+        candidates = [c for c in candidates if c.direction != "LONG"]
+        log.info("Regime %s: long entries suppressed", regime.label)
+    if not regime.allow_short_entries:
+        candidates = [c for c in candidates if c.direction != "SHORT"]
+
+    log.info("Signals: %d candidates (regime=%s)", len(candidates), regime.label)
 
     # Refresh snapshot after position management ops
     snap = broker.snapshot()
 
+    # Regime-adjusted position cap
+    effective_max_positions = regime.max_positions_override
+
     # Risk pre-checks + order execution
     orders_submitted = 0
     for candidate in candidates:
+        # Respect regime position cap before calling risk manager
+        if len(snap.positions) >= effective_max_positions:
+            log.info(
+                "Regime cap: %d positions at regime limit %d — stopping",
+                len(snap.positions), effective_max_positions,
+            )
+            break
+
         sector = sector_map.get(candidate.symbol, "Unknown")
         side = OrderSide.BUY if candidate.direction == "LONG" else OrderSide.SELL
 
@@ -291,23 +485,26 @@ def run_quant_job(
                 side=side,
                 limit_price=sizing.limit_price,
                 stop_price=sizing.stop_price,
+                take_profit_price=sizing.take_profit_price,
             )
             store.record_order(
                 conn,
                 order_id=str(order.id),
                 symbol=candidate.symbol,
                 side=side.value,
-                order_type="limit",
+                order_type="bracket",
                 qty=sizing.qty,
                 limit_price=sizing.limit_price,
                 stop_price=sizing.stop_price,
                 status=str(order.status),
+                submitted_at=run_timestamp,
                 run_timestamp=run_timestamp,
             )
             log.info(
-                "ORDER %s %s qty=%d @ %.2f stop=%.2f",
+                "ORDER %s %s qty=%d @ %.2f stop=%.2f tp=%.2f",
                 candidate.direction, candidate.symbol,
                 sizing.qty, sizing.limit_price, sizing.stop_price,
+                sizing.take_profit_price or 0,
             )
             orders_submitted += 1
 
@@ -400,7 +597,15 @@ def main() -> None:
     # --- APScheduler ---
     scheduler = BlockingScheduler(timezone=str(_ET))
 
-    # Job A — LLM runs
+    # Job A — LLM runs (3× daily: pre-market overnight, morning narrative, midday update)
+    scheduler.add_job(
+        run_llm_job,
+        CronTrigger(hour=9, minute=0, timezone=str(_ET)),
+        args=["premarket", settings, llm_client, news_provider, conn],
+        id="llm_premarket",
+        name="LLM Sentiment — Pre-Market",
+        misfire_grace_time=300,
+    )
     scheduler.add_job(
         run_llm_job,
         CronTrigger(hour=10, minute=0, timezone=str(_ET)),
@@ -419,7 +624,7 @@ def main() -> None:
     )
 
     # Job B — Quant scanner (6 windows)
-    quant_args = [settings, broker, risk, market_data, conn]
+    quant_args = [settings, broker, risk, market_data, news_provider, conn]
     for hour, minute, session_label in [
         (10, 30, "quant_1030"),
         (11, 30, "quant_1130"),
@@ -448,7 +653,7 @@ def main() -> None:
     )
 
     log.info(
-        "Scheduled 2 LLM jobs, 6 quant jobs, and 1 email job. "
+        "Scheduled 3 LLM jobs, 6 quant jobs, and 1 email job. "
         "Waiting for market hours... (Ctrl-C to stop)"
     )
 

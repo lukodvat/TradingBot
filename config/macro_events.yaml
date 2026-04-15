@@ -1,0 +1,158 @@
+# High-impact macro events — Job B will not open new positions on these dates.
+# Existing positions are still managed (trailing stops, flattens run normally).
+#
+# Update this file quarterly:
+#   FOMC schedule  → https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+#   CPI schedule   → https://www.bls.gov/schedule/news_release/cpi.htm
+#
+# Format: YYYY-MM-DD (date the announcement is released, not the meeting start date)
+
+events:
+
+  # ---------------------------------------------------------------------------
+  # FOMC rate decisions (second day of each two-day meeting, ~2 PM ET release)
+  # ---------------------------------------------------------------------------
+
+  # 2025
+  - date: "2025-01-29"
+    type: FOMC
+    description: "FOMC Rate Decision — January 2025"
+
+  - date: "2025-03-19"
+    type: FOMC
+    description: "FOMC Rate Decision — March 2025"
+
+  - date: "2025-05-07"
+    type: FOMC
+    description: "FOMC Rate Decision — May 2025"
+
+  - date: "2025-06-18"
+    type: FOMC
+    description: "FOMC Rate Decision — June 2025"
+
+  - date: "2025-07-30"
+    type: FOMC
+    description: "FOMC Rate Decision — July 2025"
+
+  - date: "2025-09-17"
+    type: FOMC
+    description: "FOMC Rate Decision — September 2025"
+
+  - date: "2025-10-29"
+    type: FOMC
+    description: "FOMC Rate Decision — October 2025"
+
+  - date: "2025-12-10"
+    type: FOMC
+    description: "FOMC Rate Decision — December 2025"
+
+  # 2026 (verify against Fed calendar)
+  - date: "2026-01-28"
+    type: FOMC
+    description: "FOMC Rate Decision — January 2026"
+
+  - date: "2026-03-18"
+    type: FOMC
+    description: "FOMC Rate Decision — March 2026"
+
+  - date: "2026-05-06"
+    type: FOMC
+    description: "FOMC Rate Decision — May 2026"
+
+  - date: "2026-06-17"
+    type: FOMC
+    description: "FOMC Rate Decision — June 2026"
+
+  - date: "2026-07-29"
+    type: FOMC
+    description: "FOMC Rate Decision — July 2026"
+
+  - date: "2026-09-16"
+    type: FOMC
+    description: "FOMC Rate Decision — September 2026"
+
+  - date: "2026-10-28"
+    type: FOMC
+    description: "FOMC Rate Decision — October 2026"
+
+  - date: "2026-12-09"
+    type: FOMC
+    description: "FOMC Rate Decision — December 2026"
+
+  # ---------------------------------------------------------------------------
+  # CPI releases (8:30 AM ET, Bureau of Labor Statistics)
+  # ---------------------------------------------------------------------------
+
+  # 2025
+  - date: "2025-01-15"
+    type: CPI
+    description: "CPI — December 2024 data"
+
+  - date: "2025-02-12"
+    type: CPI
+    description: "CPI — January 2025 data"
+
+  - date: "2025-03-12"
+    type: CPI
+    description: "CPI — February 2025 data"
+
+  - date: "2025-04-10"
+    type: CPI
+    description: "CPI — March 2025 data"
+
+  - date: "2025-05-13"
+    type: CPI
+    description: "CPI — April 2025 data"
+
+  - date: "2025-06-11"
+    type: CPI
+    description: "CPI — May 2025 data"
+
+  - date: "2025-07-15"
+    type: CPI
+    description: "CPI — June 2025 data"
+
+  - date: "2025-08-12"
+    type: CPI
+    description: "CPI — July 2025 data"
+
+  - date: "2025-09-10"
+    type: CPI
+    description: "CPI — August 2025 data"
+
+  - date: "2025-10-15"
+    type: CPI
+    description: "CPI — September 2025 data"
+
+  - date: "2025-11-13"
+    type: CPI
+    description: "CPI — October 2025 data"
+
+  - date: "2025-12-10"
+    type: CPI
+    description: "CPI — November 2025 data"
+
+  # 2026 (approximate — verify against BLS schedule each quarter)
+  - date: "2026-01-14"
+    type: CPI
+    description: "CPI — December 2025 data"
+
+  - date: "2026-02-11"
+    type: CPI
+    description: "CPI — January 2026 data"
+
+  - date: "2026-03-11"
+    type: CPI
+    description: "CPI — February 2026 data"
+
+  - date: "2026-04-10"
+    type: CPI
+    description: "CPI — March 2026 data"
+
+  - date: "2026-05-13"
+    type: CPI
+    description: "CPI — April 2026 data"
+
+  - date: "2026-06-10"
+    type: CPI
+    description: "CPI — May 2026 data"

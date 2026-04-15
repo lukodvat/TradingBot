@@ -10,6 +10,7 @@ is ever constructed if the URL is not paper.
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -22,6 +23,7 @@ from alpaca.trading.requests import (
     LimitOrderRequest,
     MarketOrderRequest,
     StopLossRequest,
+    TakeProfitRequest,
     TrailingStopOrderRequest,
 )
 
@@ -132,19 +134,21 @@ class BrokerClient:
         qty: float,
         limit_price: float,
         stop_price: float,
+        take_profit_price: Optional[float] = None,
     ) -> Order:
         """
-        Submit a bracket order: limit entry + stop-loss leg.
+        Submit a bracket order: limit entry + stop-loss leg + optional take-profit leg.
 
-        No take-profit leg — exits are handled by the trailing stop update
-        that runs at the top of each session once the position is up 1.5%.
+        The take-profit fires first if the position reaches the target price,
+        otherwise the trailing stop (activated at +1.5%) guards the exit.
 
         Args:
-            symbol:      Ticker symbol.
-            side:        OrderSide.BUY or OrderSide.SELL.
-            qty:         Number of shares (will be rounded to 2 decimal places).
-            limit_price: Entry limit price.
-            stop_price:  Initial stop-loss price (2% below entry for longs).
+            symbol:             Ticker symbol.
+            side:               OrderSide.BUY or OrderSide.SELL.
+            qty:                Number of shares (rounded to 2 decimal places).
+            limit_price:        Entry limit price.
+            stop_price:         Initial stop-loss price (2% from entry).
+            take_profit_price:  Optional limit price for take-profit leg (3% from entry).
         """
         qty = round(qty, 2)
         req = LimitOrderRequest(
@@ -155,11 +159,18 @@ class BrokerClient:
             limit_price=round(limit_price, 2),
             order_class=OrderClass.BRACKET,
             stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
+            take_profit=(
+                TakeProfitRequest(limit_price=round(take_profit_price, 2))
+                if take_profit_price is not None
+                else None
+            ),
         )
         order = self._client.submit_order(req)
         log.info(
-            "Bracket order submitted: %s %s x%.2f @ limit=%.2f stop=%.2f id=%s",
-            side.value, symbol, qty, limit_price, stop_price, order.id,
+            "Bracket order submitted: %s %s x%.2f @ limit=%.2f stop=%.2f tp=%s id=%s",
+            side.value, symbol, qty, limit_price, stop_price,
+            f"{take_profit_price:.2f}" if take_profit_price else "none",
+            order.id,
         )
         return order
 
@@ -243,6 +254,26 @@ class BrokerClient:
         result = list(orders) if orders else []
         log.warning("Closed all positions (%d orders submitted)", len(result))
         return result
+
+    def get_filled_orders_since(self, since: datetime) -> list[Order]:
+        """
+        Return all filled orders submitted after `since`.
+
+        Used by the fill reconciliation step in Job B to populate the
+        trades table with actual Alpaca fill prices and timestamps.
+        """
+        try:
+            req = GetOrdersRequest(
+                status="closed",   # includes filled + cancelled
+                after=since,
+                limit=100,
+            )
+            result = self._client.get_orders(filter=req)
+            orders = list(result) if result else []
+            return [o for o in orders if str(o.status) == "filled"]
+        except Exception as exc:
+            log.error("get_filled_orders_since failed: %s", exc)
+            return []
 
     def cancel_order(self, order_id: str) -> None:
         try:

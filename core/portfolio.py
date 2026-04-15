@@ -18,9 +18,13 @@ It does NOT submit new orders — that belongs to the signal execution logic in 
 
 import logging
 import sqlite3
+from datetime import date as _date
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from typing import Optional
+
+from alpaca.trading.enums import OrderSide
 from alpaca.trading.models import Position
 
 from config.settings import Settings
@@ -92,7 +96,14 @@ class PortfolioManager:
                 symbol, check.unrealized_pct * 100,
             )
             try:
-                self._broker.replace_stop_with_trailing(symbol)
+                qty = float(position.qty or 0)
+                side = _trailing_stop_side(qty)
+                self._broker.replace_stop_with_trailing(
+                    symbol=symbol,
+                    side=side,
+                    qty=abs(qty),
+                    trail_pct=self._s.trail_pct,
+                )
                 upgraded += 1
                 log.info("Trailing stop activated for %s", symbol)
             except Exception as exc:
@@ -200,6 +211,74 @@ class PortfolioManager:
         )
 
     # -------------------------------------------------------------------------
+    # Time-based exit (stale position culling)
+    # -------------------------------------------------------------------------
+
+    def manage_time_based_exits(
+        self,
+        positions: list[Position],
+        run_timestamp: str,
+    ) -> int:
+        """
+        Close positions that have been held for longer than max_hold_days without
+        meaningful gain. Frees up capital from stuck trades.
+
+        Policy: if held >= max_hold_days calendar days AND unrealized < +1%, close.
+
+        Returns the number of positions closed.
+        """
+        closed = 0
+        today = _date.fromisoformat(run_timestamp[:10])
+
+        for position in positions:
+            symbol = position.symbol
+            entry_date_str = self._get_entry_date(symbol)
+            if entry_date_str is None:
+                log.debug("Time-exit: no entry date found for %s — skip", symbol)
+                continue
+
+            entry_date = _date.fromisoformat(entry_date_str)
+            days_held = (today - entry_date).days
+
+            if days_held < self._s.max_hold_days:
+                log.debug(
+                    "Time-exit %s: held %d/%d days — keep",
+                    symbol, days_held, self._s.max_hold_days,
+                )
+                continue
+
+            unrealized_pct = _unrealized_pct(position)
+            if unrealized_pct >= 0.01:
+                log.debug(
+                    "Time-exit %s: held %d days but up %.2f%% — keep",
+                    symbol, days_held, unrealized_pct * 100,
+                )
+                continue
+
+            log.info(
+                "Time-exit %s: held %d days, unrealized=%.2f%% < 1%% — closing",
+                symbol, days_held, unrealized_pct * 100,
+            )
+            self._close(symbol)
+            closed += 1
+
+        return closed
+
+    def _get_entry_date(self, symbol: str) -> Optional[str]:
+        """Return YYYY-MM-DD of the most recent entry trade for this symbol."""
+        row = self._conn.execute(
+            """
+            SELECT DATE(run_timestamp) AS entry_date
+            FROM trades
+            WHERE symbol = ? AND side IN ('buy', 'sell_short')
+            ORDER BY run_timestamp DESC
+            LIMIT 1
+            """,
+            (symbol,),
+        ).fetchone()
+        return row["entry_date"] if row else None
+
+    # -------------------------------------------------------------------------
     # Same-ticker cooldown
     # -------------------------------------------------------------------------
 
@@ -237,6 +316,15 @@ class PortfolioManager:
 # ---------------------------------------------------------------------------
 # Pure helpers (no broker state)
 # ---------------------------------------------------------------------------
+
+def _trailing_stop_side(qty: float) -> OrderSide:
+    """
+    Return the correct order side for a trailing stop.
+    Long positions (qty > 0) are protected by a SELL trailing stop.
+    Short positions (qty < 0) are protected by a BUY trailing stop.
+    """
+    return OrderSide.SELL if qty > 0 else OrderSide.BUY
+
 
 def _minutes_to_market_close(run_dt: datetime) -> int:
     """

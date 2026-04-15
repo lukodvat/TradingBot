@@ -453,6 +453,69 @@ def send_daily_email(
     )
 
 
+def send_circuit_breaker_alert(
+    settings: Settings,
+    daily_pnl_pct: float,
+    equity: float,
+) -> bool:
+    """
+    Send an immediate email when the daily circuit breaker fires.
+
+    This is separate from the end-of-day summary — it fires at the moment
+    of liquidation so the operator knows immediately, not 6 hours later.
+    """
+    if not settings.email_enabled:
+        return False
+    if not all([settings.email_recipient, settings.email_sender, settings.email_app_password]):
+        return False
+
+    now_et = datetime.now(timezone.utc).astimezone(_ET)
+    time_str = now_et.strftime("%Y-%m-%d %H:%M ET")
+
+    subject = f"[TradingBot] CIRCUIT BREAKER FIRED — {time_str}"
+
+    html_body = f"""
+<html>
+<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <h2 style="color: #cc0000; border-bottom: 2px solid #cc0000; padding-bottom: 8px;">
+    Daily Circuit Breaker Triggered
+  </h2>
+  <p>The daily loss limit was breached at <strong>{time_str}</strong>.</p>
+  <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+    <tr style="background: #fff0f0;">
+      <td style="padding: 8px 12px; border: 1px solid #eee;"><strong>Daily P&amp;L</strong></td>
+      <td style="padding: 8px 12px; border: 1px solid #eee; color: #cc0000; font-weight: bold;">
+        {daily_pnl_pct*100:+.2f}%
+      </td>
+    </tr>
+    <tr>
+      <td style="padding: 8px 12px; border: 1px solid #eee;"><strong>Threshold</strong></td>
+      <td style="padding: 8px 12px; border: 1px solid #eee;">-3.00%</td>
+    </tr>
+    <tr style="background: #f9f9f9;">
+      <td style="padding: 8px 12px; border: 1px solid #eee;"><strong>Current Equity</strong></td>
+      <td style="padding: 8px 12px; border: 1px solid #eee;">${equity:,.2f}</td>
+    </tr>
+  </table>
+  <p>All positions have been liquidated. No new entries will be taken today.</p>
+  <p style="color: #666; font-size: 13px;">
+    The bot will resume normal operation at the next trading day's 10:30 ET scan.
+  </p>
+</body>
+</html>"""
+
+    ok = _send_via_gmail(
+        settings.email_sender,
+        settings.email_app_password,
+        settings.email_recipient,
+        subject,
+        html_body,
+    )
+    if ok:
+        log.info("Circuit breaker alert sent to %s", settings.email_recipient)
+    return ok
+
+
 def _send_via_gmail(
     sender: str,
     password: str,

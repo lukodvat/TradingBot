@@ -198,14 +198,23 @@ CREATE INDEX IF NOT EXISTS idx_vol_filter_symbol ON volatility_filter_log(symbol
 """
 
 
-def init_db(db_path: str) -> None:
+def init_db(conn_or_path: "sqlite3.Connection | str") -> None:
     """
     Create all tables and indexes if they don't exist.
     Safe to call on every startup — all statements are idempotent.
+
+    Accepts either an open sqlite3.Connection or a file path string.
     """
-    with sqlite3.connect(db_path) as conn:
+    if isinstance(conn_or_path, str):
+        with sqlite3.connect(conn_or_path) as conn:
+            conn.executescript(SCHEMA_SQL)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.commit()
+    else:
+        conn = conn_or_path
         conn.executescript(SCHEMA_SQL)
-        conn.execute("PRAGMA journal_mode=WAL")   # better concurrent read performance
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.commit()
 

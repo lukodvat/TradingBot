@@ -120,6 +120,48 @@ class FinnhubProvider(NewsProvider):
         )
         return headlines
 
+    def get_upcoming_earnings(
+        self,
+        symbols: list[str],
+        days_ahead: int = 2,
+    ) -> set[str]:
+        """
+        Return the subset of `symbols` that have an earnings announcement
+        within the next `days_ahead` calendar days.
+
+        Uses Finnhub's earnings calendar endpoint (free tier).
+        Returns an empty set on any API failure so the caller degrades gracefully.
+        """
+        self._rate_limit()
+
+        now = datetime.now(timezone.utc)
+        from_str = now.strftime("%Y-%m-%d")
+        to_str = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+        try:
+            raw = self._client.earnings_calendar(
+                symbol=None, from_=from_str, to=to_str, international=False
+            )
+        except Exception as exc:
+            log.warning("Finnhub earnings_calendar failed: %s", exc)
+            return set()
+
+        symbol_set = set(symbols)
+        upcoming: set[str] = set()
+
+        calendar = raw.get("earningsCalendar", []) if isinstance(raw, dict) else []
+        for entry in calendar:
+            sym = entry.get("symbol", "")
+            if sym in symbol_set:
+                upcoming.add(sym)
+
+        if upcoming:
+            log.info(
+                "Earnings blackout: %d tickers have earnings in next %d days: %s",
+                len(upcoming), days_ahead, sorted(upcoming),
+            )
+        return upcoming
+
     def _rate_limit(self) -> None:
         elapsed = time.monotonic() - self._last_call_ts
         wait = self._min_call_interval_s - elapsed

@@ -40,6 +40,7 @@ class SizingResult:
     limit_price: float
     stop_price: float
     notional: float                   # qty * limit_price
+    take_profit_price: Optional[float] = None   # None when not approved
     rejection_reason: Optional[RejectionReason] = None
 
 
@@ -168,6 +169,7 @@ class RiskManager:
             return self._reject(qty, limit_price, RejectionReason.INSUFFICIENT_BUYING_POWER)
 
         stop_price = self._compute_stop(limit_price, side)
+        take_profit_price = self._compute_take_profit(limit_price, side)
 
         return SizingResult(
             approved=True,
@@ -175,6 +177,7 @@ class RiskManager:
             limit_price=limit_price,
             stop_price=stop_price,
             notional=actual_notional,
+            take_profit_price=take_profit_price,
         )
 
     # -------------------------------------------------------------------------
@@ -290,6 +293,11 @@ class RiskManager:
         if side == OrderSide.BUY:
             return round(entry_price * (1 - self._s.stop_loss_pct), 2)
         return round(entry_price * (1 + self._s.stop_loss_pct), 2)
+
+    def _compute_take_profit(self, entry_price: float, side: OrderSide) -> float:
+        if side == OrderSide.BUY:
+            return round(entry_price * (1 + self._s.take_profit_pct), 2)
+        return round(entry_price * (1 - self._s.take_profit_pct), 2)
 
     def _sector_notional(
         self,
