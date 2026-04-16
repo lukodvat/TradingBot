@@ -9,11 +9,12 @@ An autonomous algorithmic trading system that combines technical analysis with L
 The system runs three scheduled jobs on a server, all sharing a single SQLite database.
 
 ```
-10:00 ET  ─── Job A: LLM fetches headlines, scores sentiment, writes bias to DB
+09:00 ET  ─── Job A: Pre-market sentiment (overnight news, 8h lookback)
+10:00 ET  ─── Job A: Morning sentiment (full prior-day narrative, 24h lookback)
 10:30 ET  ─┐
 11:30 ET  ─┤
 12:30 ET  ─┤─ Job B: Quant scanner reads bias, finds setups, executes orders
-13:00 ET  ─── Job A: Midday sentiment refresh
+13:00 ET  ─── Job A: Midday sentiment refresh (intraday update, 4h lookback)
 13:30 ET  ─┤
 14:30 ET  ─┤─ Job B (continued)
 15:30 ET  ─┘
@@ -22,26 +23,31 @@ The system runs three scheduled jobs on a server, all sharing a single SQLite da
 
 **Job A — LLM Sentiment Pipeline**
 
-Fetches financial headlines from Finnhub for 20 watchlist tickers and runs them through a three-tier triage:
+Fetches financial headlines from Finnhub for 20 watchlist tickers and runs them through a three-tier triage. Runs three times daily — pre-market (overnight news), morning (full prior-day narrative), and midday (intraday update). SQLite de-duplication ensures headlines are never scored twice.
 
 - **Tier 1** — Free regex filter. Instantly drops SEC filings, routine dividends, index rebalances.
 - **Tier 2** — Claude Haiku scores each headline: `{sentiment: -1..+1, confidence: 0..1}`.
-- **Tier 3** — Claude Sonnet deep assessment. Only fires when sentiment is strong and confident (capped at 5 calls per run to control cost).
+- **Tier 3** — Claude Sonnet deep assessment. Only fires when sentiment is strong and confident (capped at 5 calls per run).
 
-The result is a per-ticker bias — BULLISH, NEUTRAL, or BEARISH — written to SQLite. Total LLM cost: ~$1.25/month.
+The result is a per-ticker bias — BULLISH, NEUTRAL, or BEARISH — written to SQLite. When multiple runs exist for the same ticker on the same day, midday bias takes priority over morning, which takes priority over pre-market. Estimated LLM cost: ~$1.75–$3.50/month.
 
 **Job B — Quant Scanner**
 
-Runs six times per day. Makes zero LLM API calls — it reads the bias from SQLite for free.
+Runs six times per day. Makes zero LLM API calls — reads bias from SQLite for free.
 
 For each run:
-1. Circuit breaker check — if daily P&L is below -3%, liquidate everything and stop.
-2. Position management — upgrade fixed stops to trailing stops on winning positions (+1.5% threshold).
-3. Flatten check — at 15:30 ET, close positions unless they are up >1% with matching sentiment. Always flatten on Fridays.
-4. Fetch OHLCV bars and run the volatility filter (ATR/price ratio + realized vol).
-5. Signal scan — a ticker only qualifies if ALL are true: price above EMA(20), RSI(14) between 40–70, volume above 1.5× average, and today's sentiment bias matches the direction.
-6. Risk checks per candidate — position limit (5), sector cap (25%), buying power.
-7. Submit bracket orders: limit entry + 2% stop-loss.
+1. **Fill reconciliation** — polls Alpaca for filled orders in the last 24h and populates the trades table with actual fill prices.
+2. **Circuit breaker** — if daily P&L is below −3%, liquidate everything, send an immediate alert email, and stop.
+3. **Trailing stop activation** — upgrade fixed stops to trailing stops on positions up ≥1.5%.
+4. **Time-based exits** — close positions held ≥7 calendar days with <1% unrealized gain.
+5. **Flatten check** — at 15:30 ET, close positions unless up >1% with matching bias. Always flatten on Fridays.
+6. **Macro blackout** — skip new entries on FOMC and CPI dates (config/macro_events.yaml).
+7. **Market regime filter** — evaluate SPY EMA(50/200) and realized vol. CAUTION suppresses longs; BEAR halts all entries; high vol caps positions at 2.
+8. **Earnings blackout** — skip tickers with earnings within 2 calendar days.
+9. Fetch OHLCV bars (80 days) and run the volatility filter (ATR/price ratio + realized vol).
+10. **Signal scan** — a ticker qualifies only if ALL are true: price above EMA(20), RSI(14) between 40–70, volume above 1.5× average, matching sentiment bias, outperforms SPY over 20 days (longs), and within 10% of the 63-day high (longs).
+11. Risk checks per candidate — position limit (regime-adjusted), sector cap (25%), buying power.
+12. Submit bracket orders: limit entry + 2% stop-loss + 3% take-profit leg.
 
 **Job C — Daily Email**
 
@@ -60,14 +66,14 @@ At 4:30 PM ET, sends an HTML email containing:
 |---|---|
 | Broker + market data | `alpaca-py` (paper trading only) |
 | LLM | Anthropic API — Haiku (fast/cheap) and Sonnet (deep assessment) |
-| News | Finnhub free tier |
+| News + earnings | Finnhub free tier |
 | Indicators | `pandas` + `pandas-ta` |
 | Scheduler | APScheduler — three jobs in one process |
 | Database | SQLite (WAL mode, no ORM) |
 | Dashboard | Streamlit |
 | Charts | Plotly |
 | Config | Pydantic Settings |
-| Tests | pytest — 291 tests |
+| Tests | pytest — 327 tests |
 | Language | Python 3.12 |
 
 ---
@@ -79,14 +85,22 @@ Every guardrail is hard-coded and tested. None are configurable at runtime.
 | Guardrail | Value |
 |---|---|
 | Stop-loss | 2% from entry (bracket order) |
+| Take-profit | +3% from entry (bracket order leg) |
 | Trailing stop activates at | +1.5% unrealized gain |
 | Trailing stop distance | 3% |
-| Max open positions | 5 |
+| Time-based exit | ≥7 days held + <1% gain |
+| Max open positions | 5 (2 in high-vol regime) |
 | Max position size | 10% of equity |
 | Max sector concentration | 25% of equity |
-| Daily circuit breaker | -3% equity → liquidate all |
+| Daily circuit breaker | −3% equity → liquidate all + immediate alert email |
 | Overnight flatten | 15:30 ET (hold exception if up >1% + matching bias) |
 | Weekend flatten | Friday 15:30 ET, always, no exceptions |
+| Earnings blackout | 2 calendar days before earnings |
+| Macro blackout | FOMC + CPI dates (config/macro_events.yaml) |
+| Market regime gate | SPY EMA(50/200) → BULL / CAUTION / BEAR |
+| Relative strength | Ticker 20d return must exceed SPY (longs only) |
+| Near-high filter | Price within 10% of 63-day high (longs only) |
+| NYSE holiday calendar | 2025–2026 holiday dates built in |
 | LLM monthly hard-stop | $18 USD |
 | Live key guard | Process exits immediately if a non-paper Alpaca URL is detected |
 | Backtest gate | `main.py` refuses to start without a passing backtest report |
@@ -203,18 +217,20 @@ pytest
 TradingBot/
 ├── config/
 │   ├── settings.py          # All configuration — paper-only guard enforced here
-│   └── watchlist.yaml       # 20 tickers across 6 sectors
+│   ├── watchlist.yaml       # 20 tickers across 6 sectors
+│   └── macro_events.yaml    # FOMC + CPI blackout dates
 ├── core/
 │   ├── broker.py            # Alpaca wrapper — raises on live keys
 │   ├── risk.py              # All guardrails: sizing, stops, sector cap, circuit breaker
-│   └── portfolio.py         # Trailing stops, flatten logic, equity snapshots
+│   └── portfolio.py         # Trailing stops, time exits, flatten logic, equity snapshots
 ├── data/
 │   ├── market.py            # OHLCV bar fetching
-│   └── news.py              # Finnhub headlines with rate limiting and de-dupe
+│   └── news.py              # Finnhub headlines + earnings calendar
 ├── analysis/
+│   ├── regime.py            # SPY EMA regime filter (BULL/CAUTION/BEAR)
 │   ├── volatility.py        # ATR and realized vol filter
 │   ├── sentiment.py         # Three-tier LLM triage orchestrator
-│   └── signals.py           # Technical signal scanner
+│   └── signals.py           # Technical signal scanner (EMA, RSI, vol, rel-strength, near-high)
 ├── llm/
 │   ├── client.py            # Anthropic SDK wrapper with cost tracking
 │   ├── prompts.py           # Prompt templates for Haiku and Sonnet
@@ -227,8 +243,8 @@ TradingBot/
 │   ├── schema.py            # 9 SQLite tables
 │   └── store.py             # Read/write helpers
 ├── notifications/
-│   └── email.py             # Daily HTML email with LLM summary
-├── tests/                   # 291 tests
+│   └── email.py             # Daily HTML email + immediate circuit breaker alert
+├── tests/                   # 327 tests
 ├── main.py                  # Entrypoint — APScheduler with Jobs A, B, C
 ├── run_backtest.py          # Standalone backtest CLI
 └── dashboard.py             # Streamlit dashboard
@@ -244,9 +260,9 @@ TradingBot/
 |---|---|
 | Technology | AAPL, MSFT, GOOGL, AMZN, NVDA, META, AMD, CRM |
 | Finance | JPM, BAC, GS |
-| Healthcare | JNJ, PFE, UNH |
+| Healthcare | JNJ, AMGN, UNH |
 | Energy | XOM, CVX |
-| Consumer | HD, WMT, DIS |
+| Consumer | HD, WMT, TSLA |
 
 ---
 
