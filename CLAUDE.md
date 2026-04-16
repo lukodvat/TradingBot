@@ -203,6 +203,20 @@ Two-phase strategy:
   (`expectancy > 0`, `trades >= 10`, `sharpe > 0`) before paper trading starts.
 - **Phase 2 (after 2–3 weeks live):** Add sentiment filter. Refine thresholds.
 
+The harness certifies the **same signal and exit criteria as the live system**:
+
+Signal (`_compute_signal`, warmup = 65 bars):
+- EMA(20) trend + RSI(14) in [40, 70] + volume > 1.5× average
+- **Near-high proximity**: price within `near_high_max_drawdown` of the 63-bar rolling high
+- **Relative strength vs SPY**: ticker 20d return > SPY 20d return (longs only)
+- SPY bars are always fetched by the loader to compute the RS filter each day
+
+Exits:
+- **Take-profit**: `_check_exits` exits at `entry × (1 + take_profit_pct)` — checked before stop-loss
+- **Trailing stop**: activates at `trail_activation_pct` unrealized gain, then trails at `trail_pct`
+- **Fixed stop-loss**: 2% from entry
+- **Time-based exit**: `_check_time_exit()` — close positions held ≥ `max_hold_days` with < 1% gain
+
 Slippage model: configurable `--slippage-bps` (default 10bps) on every fill.
 Lookahead prevention: signal on day N → entry fills at day N+1 open price.
 
@@ -228,7 +242,7 @@ Access: SSH tunnel → `ssh -L 8501:localhost:8501 user@your-server`
 - `pydantic-settings` — typed config with validation
 - `plotly` + `streamlit` — interactive dashboard
 - SQLite — single-file database, WAL mode, no ORM
-- `pytest` — 327 tests across all modules
+- `pytest` — 347 tests across all modules
 
 ## Default Watchlist (20 stocks, 6 sectors)
 

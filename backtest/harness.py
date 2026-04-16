@@ -39,8 +39,9 @@ from data.market import load_sector_map
 log = logging.getLogger(__name__)
 
 # Warm-up bars needed before any signal is valid.
-# EMA(20) needs 20 bars; RSI(14) needs 14. Use 25 to be safe.
-SIGNAL_WARMUP_BARS = 25
+# EMA(20) needs 20, RSI(14) needs 14, near-high lookback needs 63. Use 65 to match live
+# system behaviour (which always has ≥80 bars loaded before scanning).
+SIGNAL_WARMUP_BARS = 65
 
 
 class BacktestHarness:
@@ -61,7 +62,8 @@ class BacktestHarness:
         initial_equity: float = 10_000.0,
     ) -> None:
         self._settings = settings
-        self._bars = bars
+        self._bars = dict(bars)  # copy so we can pop SPY without mutating caller's dict
+        self._spy_bars: Optional[pd.DataFrame] = self._bars.pop("SPY", None)
         self._slippage_bps = slippage_bps if slippage_bps is not None else settings.backtest_slippage_bps
         self._slippage_mult = self._slippage_bps / 10_000
         self._initial_equity = initial_equity
@@ -163,6 +165,16 @@ class BacktestHarness:
                 if today_bar is None:
                     continue  # no data today — carry position forward
 
+                # Time-based exit: close stale positions with minimal gain
+                time_exit = self._check_time_exit(pos, today, today_bar)
+                if time_exit:
+                    exit_price, exit_reason = time_exit
+                    trade = self._close_position(pos, exit_price, today, exit_reason)
+                    equity += trade.pnl
+                    completed_trades.append(trade)
+                    del open_positions[symbol]
+                    continue
+
                 exit_result = self._check_exits(pos, today_bar)
                 if exit_result:
                     exit_price, exit_reason = exit_result
@@ -239,6 +251,8 @@ class BacktestHarness:
         """
         candidates: list[tuple[str, float, float]] = []  # (symbol, price, volume_ratio)
 
+        spy_return_20d = self._compute_spy_return(today)
+
         for symbol, df in self._bars.items():
             if symbol in open_positions:
                 continue
@@ -248,7 +262,7 @@ class BacktestHarness:
             if len(history) < SIGNAL_WARMUP_BARS:
                 continue
 
-            signal = self._compute_signal(history)
+            signal = self._compute_signal(history, spy_return_20d=spy_return_20d)
             if signal:
                 close = float(history["close"].iloc[-1])
                 vol_ratio = signal
@@ -258,14 +272,36 @@ class BacktestHarness:
         candidates.sort(key=lambda x: x[2], reverse=True)
         return [(sym, price) for sym, price, _ in candidates]
 
-    def _compute_signal(self, history: pd.DataFrame) -> Optional[float]:
+    def _compute_spy_return(self, today: date) -> Optional[float]:
+        """
+        Compute SPY's 20-day return ending on `today`, for the relative strength filter.
+
+        Returns None if SPY bars are unavailable or there is insufficient history.
+        """
+        if self._spy_bars is None:
+            return None
+        spy_history = self._spy_bars[self._spy_bars.index.date <= today]
+        if len(spy_history) < 21:
+            return None
+        spy_close = spy_history["close"]
+        return (float(spy_close.iloc[-1]) - float(spy_close.iloc[-21])) / float(spy_close.iloc[-21])
+
+    def _compute_signal(
+        self,
+        history: pd.DataFrame,
+        spy_return_20d: Optional[float] = None,
+    ) -> Optional[float]:
         """
         Compute entry signal on a history DataFrame ending at the signal bar.
 
-        Entry criteria (longs only, Phase 1):
+        Entry criteria (longs only):
           1. Close above EMA(20)
           2. RSI(14) between rsi_min and rsi_max
           3. Volume > volume_multiplier × 20-bar average volume
+          4. Near-high proximity: price within near_high_max_drawdown of 63-bar high
+             (only applied when >= near_high_lookback bars available)
+          5. Relative strength: 20d return > SPY 20d return
+             (only applied when spy_return_20d is provided)
 
         Returns:
             volume ratio (float > 0) if all conditions met, else None.
@@ -274,8 +310,6 @@ class BacktestHarness:
         s = self._settings
 
         close = history["close"]
-        high = history["high"]
-        low = history["low"]
         volume = history["volume"]
 
         # 1. EMA trend filter — use functional API to avoid DataFrame accessor ambiguity
@@ -301,11 +335,52 @@ class BacktestHarness:
         if vol_ratio < s.volume_multiplier:
             return None
 
+        price = float(close.iloc[-1])
+
+        # 4. Near-high proximity filter: price must be within near_high_max_drawdown of
+        #    the rolling high. Applied only when enough bars are available so the harness
+        #    matches the live system (which always fetches 80 bars before scanning).
+        lookback = s.near_high_lookback
+        if len(history) >= lookback:
+            high_n = float(history["high"].iloc[-lookback:].max())
+            if high_n > 0 and price < high_n * (1 - s.near_high_max_drawdown):
+                return None
+
+        # 5. Relative strength vs SPY (longs only — backtest is longs-only Phase 1)
+        if s.require_relative_strength and spy_return_20d is not None and len(close) >= 21:
+            ticker_20d = (price - float(close.iloc[-21])) / float(close.iloc[-21])
+            if ticker_20d <= spy_return_20d:
+                return None
+
         return vol_ratio
 
     # -------------------------------------------------------------------------
     # Exit logic
     # -------------------------------------------------------------------------
+
+    def _check_time_exit(
+        self,
+        pos: "_OpenPosition",
+        today: date,
+        bar: pd.Series,
+    ) -> Optional[tuple[float, str]]:
+        """
+        Check if a stale position should be closed at today's close.
+
+        Mirrors live Job B behaviour: close positions held ≥ max_hold_days with
+        < 1% unrealized gain. Called before _check_exits each bar.
+
+        Returns (exit_price, "time_exit") or None to hold.
+        """
+        days_held = (today - pos.entry_date).days
+        if days_held < self._settings.max_hold_days:
+            return None
+        bar_close = float(bar["close"])
+        unrealized_pct = (bar_close - pos.entry_price) / pos.entry_price
+        if unrealized_pct >= 0.01:
+            return None  # up ≥1% — keep holding
+        exit_price = bar_close * (1 - self._slippage_mult)
+        return exit_price, "time_exit"
 
     def _check_exits(
         self,
@@ -313,23 +388,30 @@ class BacktestHarness:
         bar: pd.Series,
     ) -> Optional[tuple[float, str]]:
         """
-        Check if this position should exit on `bar`.
+        Check if this position should exit on `bar` via price-based triggers.
 
         Checks in order:
-          1. Stop-loss (fixed or trailing) — did the low breach it?
-          2. Trailing stop activation — did the high reach +1.5%?
+          1. Take-profit — did the high reach entry + take_profit_pct?
+          2. Trailing stop activation — did the high reach +trail_activation_pct?
+          3. Stop-loss (fixed or trailing) — did the low breach it?
 
         Returns (exit_price, reason) or None to hold.
 
-        Note: we assume worst-case for stop-loss (exit at stop price, not bar low),
-        consistent with a protective stop order fill.
+        Take-profit is checked first: on a day where both TP and stop are hit,
+        TP wins — consistent with bracket order semantics (limit fills before stop).
         """
         bar_low = float(bar["low"])
         bar_high = float(bar["high"])
         s = self._settings
 
-        # Check trailing stop activation BEFORE checking if stop was hit.
-        # High may have triggered trail; low may have then hit the trail.
+        # 1. Take-profit: exit if high reaches target price
+        take_profit_price = pos.entry_price * (1 + s.take_profit_pct)
+        if bar_high >= take_profit_price:
+            exit_price = take_profit_price * (1 - self._slippage_mult)
+            return exit_price, "take_profit"
+
+        # 2. Check trailing stop activation BEFORE checking if stop was hit.
+        #    High may have triggered trail; low may have then hit the trail.
         if not pos.trailing_activated:
             gain_pct = (bar_high - pos.entry_price) / pos.entry_price
             if gain_pct >= s.trail_activation_pct:
@@ -341,6 +423,7 @@ class BacktestHarness:
 
         effective_stop = pos.trail_stop_price if pos.trailing_activated else pos.stop_price
 
+        # 3. Stop-loss (fixed or trailing)
         if bar_low <= effective_stop:
             # Exit at stop price with slippage (slippage works against us on exits too)
             exit_price = effective_stop * (1 - self._slippage_mult)

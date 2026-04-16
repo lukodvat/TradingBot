@@ -276,7 +276,7 @@ class TestHarnessSignalDetection:
         return BacktestHarness(s, bars, slippage_bps=0, initial_equity=10_000.0)
 
     def test_no_signal_with_insufficient_history(self):
-        bars = make_trending_bars(10)  # fewer than SIGNAL_WARMUP_BARS=25
+        bars = make_trending_bars(10)  # fewer than SIGNAL_WARMUP_BARS=65
         h = self._make_harness({"X": bars})
         # Harness guards on SIGNAL_WARMUP_BARS before calling _compute_signal,
         # but _compute_signal itself should also return None when EMA/RSI are NaN.
@@ -494,3 +494,273 @@ class TestReportGate:
         (tmp_path / "backtest_20250413_103000.json").write_text(json.dumps(report))
         passed, _ = check_backtest_gate(str(tmp_path))
         assert not passed
+
+
+# ---------------------------------------------------------------------------
+# harness.py — take-profit exit
+# ---------------------------------------------------------------------------
+
+class TestTakeProfitExit:
+
+    def _make_position(self, entry=100.0, stop=98.0):
+        from backtest.harness import _OpenPosition
+        return _OpenPosition(
+            symbol="TEST",
+            entry_date=date(2025, 1, 2),
+            entry_price=entry,
+            stop_price=stop,
+            qty=10.0,
+            trailing_activated=False,
+            trail_stop_price=None,
+        )
+
+    def _make_harness(self):
+        s = make_settings()
+        return BacktestHarness(s, {}, slippage_bps=0, initial_equity=10_000.0)
+
+    def _make_bar(self, high, low, open_=100, close=100):
+        return pd.Series({"open": float(open_), "high": float(high), "low": float(low), "close": float(close)})
+
+    def test_take_profit_triggers_when_high_exceeds_target(self):
+        h = self._make_harness()
+        pos = self._make_position(entry=100.0, stop=98.0)
+        # take_profit_pct=0.03 → target=103.0; high=105 exceeds target
+        bar = self._make_bar(high=105, low=101)
+        result = h._check_exits(pos, bar)
+        assert result is not None
+        exit_price, reason = result
+        assert reason == "take_profit"
+        assert exit_price == pytest.approx(103.0, rel=1e-4)  # slippage_bps=0
+
+    def test_take_profit_not_triggered_when_high_below_target(self):
+        h = self._make_harness()
+        pos = self._make_position(entry=100.0, stop=98.0)
+        # high=102 < 103 target — should not take profit
+        bar = self._make_bar(high=102, low=100.5)
+        result = h._check_exits(pos, bar)
+        assert result is None
+
+    def test_take_profit_wins_over_stop_on_same_bar(self):
+        # On a very volatile bar both TP (high>=103) and stop (low<=98) are hit.
+        # TP should win because limit orders fill before protective stops.
+        h = self._make_harness()
+        pos = self._make_position(entry=100.0, stop=98.0)
+        bar = self._make_bar(high=105, low=97)  # both TP and stop hit
+        _, reason = h._check_exits(pos, bar)
+        assert reason == "take_profit"
+
+    def test_take_profit_with_slippage(self):
+        s = make_settings(backtest_slippage_bps=50)  # 0.5% slippage
+        h = BacktestHarness(s, {}, slippage_bps=50, initial_equity=10_000.0)
+        pos = self._make_position(entry=100.0, stop=98.0)
+        bar = self._make_bar(high=105, low=101)
+        exit_price, reason = h._check_exits(pos, bar)
+        assert reason == "take_profit"
+        # exit at TP price with slippage applied: 103 * (1 - 0.005)
+        assert exit_price == pytest.approx(103.0 * 0.995, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# harness.py — time-based exit (_check_time_exit)
+# ---------------------------------------------------------------------------
+
+class TestTimeBasedExit:
+
+    def _make_position(self, entry=100.0, stop=98.0, entry_date=date(2025, 1, 2)):
+        from backtest.harness import _OpenPosition
+        return _OpenPosition(
+            symbol="TEST",
+            entry_date=entry_date,
+            entry_price=entry,
+            stop_price=stop,
+            qty=10.0,
+            trailing_activated=False,
+            trail_stop_price=None,
+        )
+
+    def _make_harness(self, **setting_overrides):
+        s = make_settings(**setting_overrides)
+        return BacktestHarness(s, {}, slippage_bps=0, initial_equity=10_000.0)
+
+    def _make_bar(self, close=100.0):
+        return pd.Series({"open": close, "high": close * 1.005, "low": close * 0.995, "close": close})
+
+    def test_time_exit_triggers_after_max_hold_with_small_gain(self):
+        # Entry 2025-01-02, today 2025-01-09 → 7 calendar days; price barely above entry
+        h = self._make_harness(max_hold_days=7)
+        pos = self._make_position(entry=100.0, entry_date=date(2025, 1, 2))
+        today = date(2025, 1, 9)  # 7 days later
+        bar = self._make_bar(close=100.5)  # 0.5% gain < 1% threshold
+        result = h._check_time_exit(pos, today, bar)
+        assert result is not None
+        exit_price, reason = result
+        assert reason == "time_exit"
+        assert exit_price == pytest.approx(100.5, rel=1e-4)
+
+    def test_time_exit_does_not_trigger_before_max_hold(self):
+        h = self._make_harness(max_hold_days=7)
+        pos = self._make_position(entry=100.0, entry_date=date(2025, 1, 2))
+        today = date(2025, 1, 8)  # only 6 days — not yet eligible
+        bar = self._make_bar(close=100.5)
+        result = h._check_time_exit(pos, today, bar)
+        assert result is None
+
+    def test_time_exit_does_not_trigger_when_gain_sufficient(self):
+        # Position is up ≥1% — don't close even if stale
+        h = self._make_harness(max_hold_days=7)
+        pos = self._make_position(entry=100.0, entry_date=date(2025, 1, 2))
+        today = date(2025, 1, 9)
+        bar = self._make_bar(close=101.5)  # 1.5% gain — above 1% threshold
+        result = h._check_time_exit(pos, today, bar)
+        assert result is None
+
+    def test_time_exit_at_exactly_max_hold_days(self):
+        # Boundary: exactly max_hold_days → should trigger
+        h = self._make_harness(max_hold_days=7)
+        pos = self._make_position(entry=100.0, entry_date=date(2025, 1, 2))
+        today = date(2025, 1, 9)  # exactly 7 days
+        bar = self._make_bar(close=99.0)  # underwater — definitely < 1%
+        result = h._check_time_exit(pos, today, bar)
+        assert result is not None
+        _, reason = result
+        assert reason == "time_exit"
+
+
+# ---------------------------------------------------------------------------
+# harness.py — near-high proximity filter in _compute_signal
+# ---------------------------------------------------------------------------
+
+class TestNearHighFilter:
+
+    def _make_harness(self, **setting_overrides):
+        s = make_settings(**setting_overrides)
+        return BacktestHarness(s, {}, slippage_bps=0, initial_equity=10_000.0)
+
+    def test_near_high_filter_passes_when_price_within_tolerance(self):
+        # seed=7, 60 bars: basic conditions hold (EMA, RSI, vol all pass — proven by
+        # test_signal_fires_on_trending_bars_with_high_volume). Set lookback=60 so
+        # the filter applies (60 >= 60). A gently trending series (+0.2%/day mean)
+        # ends within 10% of its 60-bar high, so the near-high filter must pass.
+        bars = make_trending_bars(60, seed=7)
+        h = self._make_harness(near_high_lookback=60, near_high_max_drawdown=0.10)
+        result = h._compute_signal(bars)
+        assert result is not None, (
+            "Near-high filter should pass for a trending series ending near its 60-bar high"
+        )
+
+    def test_near_high_filter_blocks_with_very_strict_threshold(self):
+        # With near_high_max_drawdown=0.0001 (0.01%), the filter blocks even a trending
+        # series that is fractionally below its 63-day high (close < high * 0.9999).
+        bars = make_trending_bars(70, seed=7)
+        h = self._make_harness(near_high_max_drawdown=0.0001)
+        result = h._compute_signal(bars)
+        assert result is None, (
+            "Near-high filter should block when drawdown tolerance is stricter "
+            "than the gap between close and the 63-bar high"
+        )
+
+    def test_near_high_filter_skipped_when_insufficient_bars(self):
+        # With only 60 bars (< near_high_lookback=63), the filter is skipped.
+        # Same strict threshold — but without enough bars the signal should still fire.
+        bars = make_trending_bars(60, seed=7)
+        h = self._make_harness(near_high_max_drawdown=0.0001)
+        result = h._compute_signal(bars)
+        assert result is not None, (
+            "Near-high filter should be skipped when fewer than near_high_lookback bars "
+            "are available, allowing the signal to fire on other criteria alone"
+        )
+
+
+# ---------------------------------------------------------------------------
+# harness.py — relative strength filter in _compute_signal
+# ---------------------------------------------------------------------------
+
+class TestRelativeStrengthFilter:
+
+    def _make_harness(self, **setting_overrides):
+        s = make_settings(**setting_overrides)
+        return BacktestHarness(s, {}, slippage_bps=0, initial_equity=10_000.0)
+
+    def _ticker_20d_return(self, bars: pd.DataFrame) -> float:
+        close = bars["close"]
+        return (float(close.iloc[-1]) - float(close.iloc[-21])) / float(close.iloc[-21])
+
+    def test_rs_filter_blocks_underperformer(self):
+        bars = make_trending_bars(60, seed=7)
+        h = self._make_harness()
+        ticker_ret = self._ticker_20d_return(bars)
+        # SPY return is 5pp higher → ticker underperforms → blocked
+        result = h._compute_signal(bars, spy_return_20d=ticker_ret + 0.05)
+        assert result is None
+
+    def test_rs_filter_passes_outperformer(self):
+        bars = make_trending_bars(60, seed=7)
+        h = self._make_harness()
+        ticker_ret = self._ticker_20d_return(bars)
+        # SPY return is 5pp lower → ticker outperforms → passes
+        result = h._compute_signal(bars, spy_return_20d=ticker_ret - 0.05)
+        assert result is not None
+
+    def test_rs_filter_blocks_when_equal_to_spy(self):
+        # Boundary: ticker return == SPY return → ticker must EXCEED SPY, not match
+        bars = make_trending_bars(60, seed=7)
+        h = self._make_harness()
+        ticker_ret = self._ticker_20d_return(bars)
+        result = h._compute_signal(bars, spy_return_20d=ticker_ret)
+        assert result is None  # equal is not strictly greater
+
+    def test_rs_filter_skipped_when_disabled(self):
+        bars = make_trending_bars(60, seed=7)
+        h = self._make_harness(require_relative_strength=False)
+        ticker_ret = self._ticker_20d_return(bars)
+        # Even though SPY is much higher, RS filter is disabled
+        result = h._compute_signal(bars, spy_return_20d=ticker_ret + 0.50)
+        assert result is not None
+
+    def test_rs_filter_skipped_when_no_spy_return(self):
+        bars = make_trending_bars(60, seed=7)
+        h = self._make_harness()
+        # spy_return_20d=None (default) → filter skipped → signal can fire
+        result = h._compute_signal(bars, spy_return_20d=None)
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# harness.py — SPY bars popped from bars dict
+# ---------------------------------------------------------------------------
+
+class TestSpyBars:
+
+    def test_spy_popped_from_tradeable_bars(self):
+        """SPY in input bars should not end up in self._bars (not tradeable)."""
+        spy_bars = make_trending_bars(80)
+        ticker_bars = make_trending_bars(80)
+        s = make_settings()
+        h = BacktestHarness(s, {"AAPL": ticker_bars, "SPY": spy_bars}, slippage_bps=0)
+        assert "SPY" not in h._bars
+        assert "AAPL" in h._bars
+
+    def test_spy_stored_for_rs_filter(self):
+        """SPY bars should be accessible as self._spy_bars."""
+        spy_bars = make_trending_bars(80)
+        s = make_settings()
+        h = BacktestHarness(s, {"AAPL": make_trending_bars(80), "SPY": spy_bars}, slippage_bps=0)
+        assert h._spy_bars is not None
+        assert len(h._spy_bars) == 80
+
+    def test_compute_spy_return_returns_none_without_spy(self):
+        s = make_settings()
+        h = BacktestHarness(s, {"AAPL": make_trending_bars(80)}, slippage_bps=0)
+        result = h._compute_spy_return(date(2024, 6, 1))
+        assert result is None
+
+    def test_compute_spy_return_returns_float_with_spy(self):
+        spy_bars = make_trending_bars(80, start_date=date(2024, 1, 2))
+        s = make_settings()
+        h = BacktestHarness(s, {"AAPL": make_trending_bars(80), "SPY": spy_bars}, slippage_bps=0)
+        # Use a date that's in the spy_bars range with enough history
+        all_dates = sorted(spy_bars.index.date)
+        today = all_dates[25]  # bar 25+ guarantees 21 bars of history
+        result = h._compute_spy_return(today)
+        assert result is not None
+        assert isinstance(result, float)
