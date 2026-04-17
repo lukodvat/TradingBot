@@ -348,26 +348,27 @@ class TestHarnessExitLogic:
     def test_no_exit_when_low_above_stop(self):
         h = self._make_harness()
         pos = self._make_position(entry=100.0, stop=98.0)
-        bar = self._make_bar(high=102, low=99)  # low > stop
+        # high=101 → +1% gain, below trail_activation_pct=2% so no trail activates
+        bar = self._make_bar(high=101, low=99)
         assert h._check_exits(pos, bar) is None
 
     def test_trailing_stop_activates_when_high_reaches_threshold(self):
         h = self._make_harness()
         pos = self._make_position(entry=100.0, stop=98.0)
-        # trail_activation_pct=0.015; high=102 → gain=2% → activates
-        bar = self._make_bar(high=102, low=100.5)
+        # trail_activation_pct=0.02; high=102 → gain=2% → activates
+        bar = self._make_bar(high=102, low=101.5)
         h._check_exits(pos, bar)
         assert pos.trailing_activated
 
     def test_trailing_stop_triggers_after_activation(self):
         h = self._make_harness()
         pos = self._make_position(entry=100.0, stop=98.0)
-        # Activate trail on bar 1
-        bar1 = self._make_bar(high=102, low=101)
+        # Activate trail on bar 1 (high=102 → +2% gain)
+        bar1 = self._make_bar(high=102, low=101.5)
         h._check_exits(pos, bar1)
         assert pos.trailing_activated
-        # Now price drops below trail stop (trail_pct=3%, trail from 102 → 98.94)
-        bar2 = self._make_bar(high=101, low=98)  # low < trail stop ~98.94
+        # trail_pct=1% → trail stop = 102 * 0.99 = 100.98
+        bar2 = self._make_bar(high=101, low=100)  # low < trail stop 100.98
         result = h._check_exits(pos, bar2)
         assert result is not None
         _, reason = result
@@ -524,28 +525,28 @@ class TestTakeProfitExit:
     def test_take_profit_triggers_when_high_exceeds_target(self):
         h = self._make_harness()
         pos = self._make_position(entry=100.0, stop=98.0)
-        # take_profit_pct=0.03 → target=103.0; high=105 exceeds target
-        bar = self._make_bar(high=105, low=101)
+        # take_profit_pct=0.06 → target=106.0; high=107 exceeds target
+        bar = self._make_bar(high=107, low=101)
         result = h._check_exits(pos, bar)
         assert result is not None
         exit_price, reason = result
         assert reason == "take_profit"
-        assert exit_price == pytest.approx(103.0, rel=1e-4)  # slippage_bps=0
+        assert exit_price == pytest.approx(106.0, rel=1e-4)  # slippage_bps=0
 
     def test_take_profit_not_triggered_when_high_below_target(self):
         h = self._make_harness()
         pos = self._make_position(entry=100.0, stop=98.0)
-        # high=102 < 103 target — should not take profit
-        bar = self._make_bar(high=102, low=100.5)
+        # high=101 < 106 target and below trail activation (2%) — should not take profit
+        bar = self._make_bar(high=101, low=100.5)
         result = h._check_exits(pos, bar)
         assert result is None
 
     def test_take_profit_wins_over_stop_on_same_bar(self):
-        # On a very volatile bar both TP (high>=103) and stop (low<=98) are hit.
+        # On a very volatile bar both TP (high>=106) and stop (low<=98) are hit.
         # TP should win because limit orders fill before protective stops.
         h = self._make_harness()
         pos = self._make_position(entry=100.0, stop=98.0)
-        bar = self._make_bar(high=105, low=97)  # both TP and stop hit
+        bar = self._make_bar(high=107, low=97)  # both TP and stop hit
         _, reason = h._check_exits(pos, bar)
         assert reason == "take_profit"
 
@@ -553,11 +554,11 @@ class TestTakeProfitExit:
         s = make_settings(backtest_slippage_bps=50)  # 0.5% slippage
         h = BacktestHarness(s, {}, slippage_bps=50, initial_equity=10_000.0)
         pos = self._make_position(entry=100.0, stop=98.0)
-        bar = self._make_bar(high=105, low=101)
+        bar = self._make_bar(high=107, low=101)
         exit_price, reason = h._check_exits(pos, bar)
         assert reason == "take_profit"
-        # exit at TP price with slippage applied: 103 * (1 - 0.005)
-        assert exit_price == pytest.approx(103.0 * 0.995, rel=1e-4)
+        # exit at TP price with slippage applied: 106 * (1 - 0.005)
+        assert exit_price == pytest.approx(106.0 * 0.995, rel=1e-4)
 
 
 # ---------------------------------------------------------------------------

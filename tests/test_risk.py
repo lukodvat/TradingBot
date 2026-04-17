@@ -142,9 +142,9 @@ class TestPositionSizing:
         assert result.rejection_reason == RejectionReason.ALREADY_HELD
 
     def test_rejected_on_sector_concentration_breach(self):
-        rm = make_rm()  # max_sector_pct = 25% = $2500
-        # Already have $2500 in tech
-        existing = make_position("AAPL", 2500.0)
+        rm = make_rm()  # max_sector_pct = 30% = $3000
+        # Already have $3000 in tech — adding any more should breach
+        existing = make_position("AAPL", 3000.0)
         result = self._size(
             rm, symbol="GOOGL", sector="technology",
             positions=[existing],
@@ -153,15 +153,15 @@ class TestPositionSizing:
         assert result.rejection_reason == RejectionReason.SECTOR_CONCENTRATION
 
     def test_sector_concentration_allows_partial_fill(self):
-        rm = make_rm()  # max_sector_pct=25% → $2500 limit
-        # $1500 already in tech → $1000 headroom; max_position = $1000
-        existing = make_position("AAPL", 1500.0)
+        rm = make_rm()  # max_sector_pct=30% → $3000 limit
+        # $2000 already in tech → $1000 headroom; max_position = $1000
+        existing = make_position("AAPL", 2000.0)
         result = self._size(
             rm, symbol="GOOGL", sector="technology", price=50.0,
             positions=[existing],
         )
         assert result.approved
-        # Headroom = $2500 - $1500 = $1000; max_position = $1000; min = $1000
+        # Headroom = $3000 - $2000 = $1000; max_position = $1000; min = $1000
         assert result.notional <= 1000.0 + 0.01
 
     def test_rejected_on_insufficient_buying_power(self):
@@ -325,7 +325,7 @@ class TestPortfolioHelpers:
         assert tech_notional == pytest.approx(2500.0)
 
     def test_sector_has_room_when_under_limit(self):
-        rm = make_rm()  # max_sector_pct=25% → $2500 on $10k
+        rm = make_rm()  # max_sector_pct=30% → $3000 on $10k
         pos = make_position("AAPL", 1000.0)
         assert rm.sector_has_room(
             "technology", equity=10_000.0,
@@ -334,7 +334,7 @@ class TestPortfolioHelpers:
 
     def test_sector_no_room_when_at_limit(self):
         rm = make_rm()
-        pos = make_position("AAPL", 2500.0)
+        pos = make_position("AAPL", 3000.0)
         assert not rm.sector_has_room(
             "technology", equity=10_000.0,
             positions=[pos], sector_map={"AAPL": "technology"}

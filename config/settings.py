@@ -45,16 +45,16 @@ class Settings(BaseSettings):
         default=0.10, description="Max single position as fraction of equity"
     )
     max_sector_pct: float = Field(
-        default=0.25, description="Max sector concentration as fraction of equity"
+        default=0.30, description="Max sector concentration as fraction of equity"
     )
     stop_loss_pct: float = Field(
         default=0.02, description="Fixed stop-loss distance from entry (2%)"
     )
     trail_pct: float = Field(
-        default=0.03, description="Trailing stop distance once activated (3%)"
+        default=0.01, description="Trailing stop distance once activated (1%)"
     )
     trail_activation_pct: float = Field(
-        default=0.015, description="Unrealized gain required to activate trailing stop"
+        default=0.02, description="Unrealized gain required to activate trailing stop"
     )
     daily_loss_limit_pct: float = Field(
         default=0.03, description="Daily P&L circuit breaker threshold (-3% of equity)"
@@ -67,16 +67,16 @@ class Settings(BaseSettings):
         default=0.04, description="Max ATR(14)/price ratio to pass filter"
     )
     vol_realized_threshold: float = Field(
-        default=0.50, description="Max 20-day annualized realized vol to pass filter"
+        default=0.80, description="Max 20-day annualized realized vol to pass filter"
     )
 
     # -------------------------------------------------------------------------
     # Signal entry criteria
     # -------------------------------------------------------------------------
-    rsi_min: float = Field(default=40.0, description="RSI lower bound for long entries")
-    rsi_max: float = Field(default=70.0, description="RSI upper bound for long entries")
+    rsi_min: float = Field(default=50.0, description="RSI lower bound for long entries")
+    rsi_max: float = Field(default=80.0, description="RSI upper bound for long entries")
     volume_multiplier: float = Field(
-        default=1.5, description="Min current volume vs 20-day average"
+        default=1.2, description="Min current volume vs 20-day average"
     )
     ema_period: int = Field(default=20, description="EMA period for trend filter")
     rsi_period: int = Field(default=14, description="RSI period")
@@ -96,7 +96,7 @@ class Settings(BaseSettings):
         default=0.6, description="|sentiment| required alongside confidence for T3 escalation"
     )
     tier3_max_per_run: int = Field(
-        default=5, description="Hard cap on Sonnet (Tier 3) calls per scheduled run"
+        default=12, description="Hard cap on Sonnet (Tier 3) calls per scheduled run"
     )
 
     # -------------------------------------------------------------------------
@@ -138,7 +138,7 @@ class Settings(BaseSettings):
         default=10, description="Stop trading N minutes before market close"
     )
     flatten_before_close_minutes: int = Field(
-        default=10, description="Flatten all positions N minutes before close"
+        default=35, description="Flatten all positions N minutes before close"
     )
 
     # -------------------------------------------------------------------------
@@ -188,11 +188,11 @@ class Settings(BaseSettings):
     # Exit improvements
     # -------------------------------------------------------------------------
     take_profit_pct: float = Field(
-        default=0.03,
-        description="Take-profit target as fraction of entry price (3% = close at +3%)",
+        default=0.06,
+        description="Take-profit target as fraction of entry price (6% = close at +6%)",
     )
     max_hold_days: int = Field(
-        default=7,
+        default=10,
         description="Close stale positions held longer than this with <1% gain (calendar days)",
     )
 
@@ -208,8 +208,8 @@ class Settings(BaseSettings):
         description="Rolling window (bars) for the near-high proximity filter",
     )
     near_high_max_drawdown: float = Field(
-        default=0.10,
-        description="Max allowed distance below the rolling high (10% = within 10% of high)",
+        default=0.07,
+        description="Max allowed distance below the rolling high (7% = within 7% of high)",
     )
 
     # -------------------------------------------------------------------------

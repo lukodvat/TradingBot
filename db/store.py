@@ -343,6 +343,19 @@ def get_equity_curve(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 # Daily P&L
 # ---------------------------------------------------------------------------
 
+def get_open_equity_for_date(
+    conn: sqlite3.Connection, date: str
+) -> Optional[float]:
+    """Return stored open_equity for `date` or None if not yet recorded."""
+    row = conn.execute(
+        "SELECT open_equity FROM daily_pnl WHERE date = ?",
+        (date,),
+    ).fetchone()
+    if row is None or row["open_equity"] is None:
+        return None
+    return float(row["open_equity"])
+
+
 def upsert_daily_pnl(
     conn: sqlite3.Connection,
     *,

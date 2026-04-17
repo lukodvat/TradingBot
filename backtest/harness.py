@@ -38,6 +38,18 @@ from data.market import load_sector_map
 
 log = logging.getLogger(__name__)
 
+
+def _load_macro_blackout_dates(path: str) -> set[str]:
+    """Load YYYY-MM-DD blackout dates from macro_events.yaml. Returns empty set on error."""
+    import yaml
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        return {str(e["date"]) for e in (data or {}).get("events", []) if "date" in e}
+    except Exception as exc:
+        log.warning("Backtest: could not load macro events from %s: %s", path, exc)
+        return set()
+
 # Warm-up bars needed before any signal is valid.
 # EMA(20) needs 20, RSI(14) needs 14, near-high lookback needs 63. Use 65 to match live
 # system behaviour (which always has ≥80 bars loaded before scanning).
@@ -68,6 +80,7 @@ class BacktestHarness:
         self._slippage_mult = self._slippage_bps / 10_000
         self._initial_equity = initial_equity
         self._sector_map = load_sector_map(settings.watchlist_path)
+        self._macro_blackouts = _load_macro_blackout_dates(settings.macro_events_path)
 
     # -------------------------------------------------------------------------
     # Public API
@@ -119,6 +132,7 @@ class BacktestHarness:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "slippage_bps": self._slippage_bps,
             "initial_equity": self._initial_equity,
+            "config_fingerprint": compute_config_fingerprint(self._settings),
             "metrics": asdict(metrics),
             "trades": [
                 {
@@ -156,6 +170,9 @@ class BacktestHarness:
         open_positions: dict[str, _OpenPosition] = {}
         completed_trades: list[BacktestTrade] = []
         equity_curve: dict[date, float] = {}
+        # Same-ticker cooldown: symbols that have already been entered on a given day.
+        # Mirrors live system — once a ticker is traded today, no re-entry until tomorrow.
+        held_today: dict[date, set[str]] = {}
 
         for i, today in enumerate(all_dates):
             # --- Step 1: Update existing positions against today's bars ---
@@ -186,11 +203,24 @@ class BacktestHarness:
             # --- Step 2: Scan for new entries (signal on today, entry tomorrow) ---
             next_day = all_dates[i + 1] if i + 1 < len(all_dates) else None
 
-            if next_day is not None:
+            # Macro blackout gate — block new entries on FOMC/CPI dates (entry date = next_day).
+            macro_blocked = (
+                next_day is not None
+                and next_day.strftime("%Y-%m-%d") in self._macro_blackouts
+            )
+
+            if next_day is not None and not macro_blocked:
+                today_entered = held_today.setdefault(next_day, set())
                 candidates = self._find_candidates(today, open_positions, equity)
                 for symbol, signal_price in candidates:
                     if len(open_positions) >= self._settings.max_positions:
                         break
+                    # Same-ticker cooldown: skip if already entered today
+                    if symbol in today_entered:
+                        continue
+                    # Sector concentration cap — reject if adding this fills the sector
+                    if not self._sector_has_room(symbol, open_positions, equity):
+                        continue
                     next_bar = self._get_bar(symbol, next_day)
                     if next_bar is None:
                         continue
@@ -213,6 +243,7 @@ class BacktestHarness:
                         trailing_activated=False,
                         trail_stop_price=None,
                     )
+                    today_entered.add(symbol)
                     log.debug(
                         "BT ENTRY %s @ %.2f stop=%.2f qty=%.2f on %s",
                         symbol, entry_price, stop_price, qty, next_day,
@@ -271,6 +302,28 @@ class BacktestHarness:
         # Rank by volume ratio (strongest participation first)
         candidates.sort(key=lambda x: x[2], reverse=True)
         return [(sym, price) for sym, price, _ in candidates]
+
+    def _sector_has_room(
+        self,
+        symbol: str,
+        open_positions: dict,
+        equity: float,
+    ) -> bool:
+        """
+        Mirrors core.risk.RiskManager sector-cap logic.
+
+        Returns True if adding one more position in `symbol`'s sector stays below
+        max_sector_pct × equity. Positions with unknown sector always pass (sector
+        map fallback). Position notional uses entry_price × qty at entry time.
+        """
+        sector = self._sector_map.get(symbol, "").lower()
+        if not sector:
+            return True  # unmapped ticker — defer to other caps
+        used = 0.0
+        for pos in open_positions.values():
+            if self._sector_map.get(pos.symbol, "").lower() == sector:
+                used += pos.entry_price * pos.qty
+        return used < equity * self._settings.max_sector_pct
 
     def _compute_spy_return(self, today: date) -> Optional[float]:
         """
@@ -532,13 +585,45 @@ class _OpenPosition:
 # Gate check utility (used by main.py)
 # ---------------------------------------------------------------------------
 
-def check_backtest_gate(reports_dir: str) -> tuple[bool, Optional[str]]:
+# ---------------------------------------------------------------------------
+# Config fingerprint — ties a saved report to the exact strategy config it tested
+# ---------------------------------------------------------------------------
+
+# Fields that materially change strategy behavior. Changing any of these invalidates
+# prior backtest reports: the gate must be re-run against the new config.
+_FINGERPRINT_FIELDS = (
+    "ema_period", "rsi_period", "rsi_min", "rsi_max",
+    "volume_multiplier", "stop_loss_pct", "take_profit_pct",
+    "trail_pct", "trail_activation_pct", "max_hold_days",
+    "near_high_lookback", "near_high_max_drawdown",
+    "require_relative_strength",
+    "max_position_pct", "max_sector_pct", "max_positions",
+    "vol_atr_threshold", "vol_realized_threshold",
+    "backtest_slippage_bps",
+)
+
+
+def compute_config_fingerprint(settings: Settings) -> str:
+    """Return a short hex digest of the strategy-relevant settings."""
+    import hashlib
+    payload = {f: getattr(settings, f) for f in _FINGERPRINT_FIELDS}
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def check_backtest_gate(
+    reports_dir: str,
+    settings: Optional[Settings] = None,
+) -> tuple[bool, Optional[str]]:
     """
     Verify that a valid, positive-expectancy backtest report exists in reports_dir.
 
+    If `settings` is provided, the report's config fingerprint must match the
+    current settings — prevents running with a config that was never backtested.
+
     Returns:
-        (True, path)  if a passing report exists.
-        (False, None) if no reports found or all fail the gate.
+        (True, path)  if a passing, fingerprint-matching report exists.
+        (False, None) if no qualifying reports found.
     """
     import glob
 
@@ -548,12 +633,23 @@ def check_backtest_gate(reports_dir: str) -> tuple[bool, Optional[str]]:
     if not report_files:
         return False, None
 
+    want_fp = compute_config_fingerprint(settings) if settings is not None else None
+
     for path in report_files:
         try:
             with open(path) as f:
                 report = json.load(f)
-            if report.get("metrics", {}).get("passed_gate", False):
-                return True, path
+            if not report.get("metrics", {}).get("passed_gate", False):
+                continue
+            if want_fp is not None:
+                got_fp = report.get("config_fingerprint")
+                if got_fp != want_fp:
+                    log.debug(
+                        "Report %s fingerprint %s != current %s — skipping",
+                        path, got_fp, want_fp,
+                    )
+                    continue
+            return True, path
         except Exception as exc:
             log.warning("Could not read backtest report %s: %s", path, exc)
 

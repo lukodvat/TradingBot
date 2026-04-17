@@ -120,20 +120,20 @@ class TestComputeConviction:
 
     def test_long_high_volume_high_rsi_near_max_conviction(self):
         s = self._s()
-        # RSI at top of range (70) → rsi_score=1.0; volume=3x → vol_score=1.0
-        score = _compute_conviction(rsi=70.0, volume_ratio=3.0, direction=LONG, s=s)
+        # RSI at top of range (80) → rsi_score=1.0; volume=3x → vol_score=1.0
+        score = _compute_conviction(rsi=80.0, volume_ratio=3.0, direction=LONG, s=s)
         assert score == pytest.approx(1.0, abs=0.01)
 
     def test_long_low_rsi_low_volume_near_zero_conviction(self):
         s = self._s()
-        # RSI at bottom of range (40) → rsi_score=0.0; volume at exactly 1.5x → vol_score=0.5
-        score = _compute_conviction(rsi=40.0, volume_ratio=1.5, direction=LONG, s=s)
+        # RSI at bottom of range (50) → rsi_score=0.0; volume at exactly 1.2x → vol_score=0.5
+        score = _compute_conviction(rsi=50.0, volume_ratio=1.2, direction=LONG, s=s)
         assert 0.0 <= score <= 0.5
 
     def test_short_low_rsi_near_max_conviction(self):
         s = self._s()
-        # SHORT: RSI at 40 (floor) → rsi_score=1.0; volume=3x → vol_score=1.0
-        score = _compute_conviction(rsi=40.0, volume_ratio=3.0, direction=SHORT, s=s)
+        # SHORT inverted band is [20, 50]; RSI at 20 (floor) → rsi_score=1.0; vol=3x → 1.0
+        score = _compute_conviction(rsi=20.0, volume_ratio=3.0, direction=SHORT, s=s)
         assert score == pytest.approx(1.0, abs=0.01)
 
     def test_conviction_clamped_by_volume_cap(self):
@@ -145,8 +145,8 @@ class TestComputeConviction:
 
     def test_conviction_in_0_1_range(self):
         s = self._s()
-        for rsi in [40, 50, 55, 65, 70]:
-            for vol in [1.5, 2.0, 3.0, 5.0]:
+        for rsi in [50, 55, 65, 75, 80]:
+            for vol in [1.2, 2.0, 3.0, 5.0]:
                 for direction in [LONG, SHORT]:
                     score = _compute_conviction(rsi, vol, direction, s)
                     assert 0.0 <= score <= 1.0
@@ -158,17 +158,39 @@ class TestComputeConviction:
 
 class TestSignalScanner:
 
-    def test_no_sentiment_bias_returns_empty(self):
+    def test_no_sentiment_bias_permitted_under_veto_semantics(self):
+        """Missing bias is treated as NEUTRAL — permitted, not vetoed."""
         scanner, conn = make_scanner()
         bars = {"AAPL": make_bullish_bars()}
-        # No bias seeded → AAPL missing from biases dict
         result = scanner.scan(bars, TODAY)
-        assert result == []
+        # Bullish bars → price > EMA → LONG; NEUTRAL (missing) does not veto LONG
+        assert len(result) == 1
+        assert result[0].direction == LONG
+        assert result[0].sentiment_bias == "NEUTRAL"
 
-    def test_neutral_bias_skipped(self):
+    def test_neutral_bias_permitted(self):
+        """Explicit NEUTRAL bias is permitted under veto semantics."""
         scanner, conn = make_scanner()
         seed_bias(conn, "AAPL", "NEUTRAL")
         bars = {"AAPL": make_bullish_bars()}
+        result = scanner.scan(bars, TODAY)
+        assert len(result) == 1
+        assert result[0].direction == LONG
+        assert result[0].sentiment_bias == "NEUTRAL"
+
+    def test_bearish_bias_vetoes_long(self):
+        """LONG setup (price > EMA) blocked by BEARISH bias."""
+        scanner, conn = make_scanner()
+        seed_bias(conn, "AAPL", "BEARISH")
+        bars = {"AAPL": make_bullish_bars()}
+        result = scanner.scan(bars, TODAY)
+        assert result == []
+
+    def test_bullish_bias_vetoes_short(self):
+        """SHORT setup (price < EMA) blocked by BULLISH bias."""
+        scanner, conn = make_scanner()
+        seed_bias(conn, "AAPL", "BULLISH")
+        bars = {"AAPL": make_bearish_bars()}
         result = scanner.scan(bars, TODAY)
         assert result == []
 
@@ -205,29 +227,24 @@ class TestSignalScanner:
         result = scanner.scan({"AAPL": short_bars}, TODAY)
         assert result == []
 
-    def test_price_below_ema_skipped_for_long(self):
-        """Force price well below EMA by using a strong downtrend with BULLISH bias."""
+    def test_direction_derived_from_price_vs_ema(self):
+        """Direction comes from quant (price vs EMA), not from bias."""
         scanner, conn = make_scanner()
         seed_bias(conn, "AAPL", "BULLISH")
-        # Use bearish bars (price trends down, ends below EMA) with BULLISH bias
+        # Bearish bars → price < EMA → SHORT direction → BULLISH vetoes
         result = scanner.scan({"AAPL": make_bearish_bars()}, TODAY)
-        # May or may not produce a signal depending on where EMA lands — this tests
-        # the direction logic. Bearish bars with BULLISH bias will usually be blocked.
-        # We don't assert empty here since bearish bars could cross EMA; instead
-        # verify the direction field if a candidate does appear:
-        for c in result:
-            assert c.direction == LONG  # bias dictates direction regardless
+        assert result == []
 
     def test_low_volume_skipped(self):
         scanner, conn = make_scanner()
         seed_bias(conn, "AAPL", "BULLISH")
         bars = make_bullish_bars()
-        bars["volume"] = 100_000.0  # uniform volume → ratio = 1.0 < 1.5
+        bars["volume"] = 100_000.0  # uniform volume → ratio = 1.0 < 1.2
         result = scanner.scan({"AAPL": bars}, TODAY)
         assert result == []
 
     def test_rsi_filter_rejects_overbought(self):
-        """Pure uptrend pushes RSI above 70 — should be rejected."""
+        """Pure uptrend pushes RSI above 80 — should be rejected."""
         scanner, conn = make_scanner()
         seed_bias(conn, "AAPL", "BULLISH")
         n = N_BARS
@@ -263,9 +280,10 @@ class TestSignalScanner:
         assert convictions == sorted(convictions, reverse=True)
 
     def test_multiple_tickers_mixed_results(self):
+        """BULLISH confirms LONG, BEARISH confirms SHORT, NEUTRAL is permitted."""
         scanner, conn = make_scanner()
         seed_bias(conn, "AAPL", "BULLISH")
-        seed_bias(conn, "MSFT", "NEUTRAL")   # should be skipped
+        seed_bias(conn, "MSFT", "NEUTRAL")
         seed_bias(conn, "GOOGL", "BEARISH")
 
         bars = {
@@ -274,8 +292,11 @@ class TestSignalScanner:
             "GOOGL": make_bearish_bars(),
         }
         result = scanner.scan(bars, TODAY)
-        symbols = {c.symbol for c in result}
-        assert "MSFT" not in symbols
+        by_symbol = {c.symbol: c for c in result}
+        # All three should produce candidates: AAPL/MSFT LONG, GOOGL SHORT
+        assert "AAPL" in by_symbol and by_symbol["AAPL"].direction == LONG
+        assert "MSFT" in by_symbol and by_symbol["MSFT"].direction == LONG
+        assert "GOOGL" in by_symbol and by_symbol["GOOGL"].direction == SHORT
 
     def test_midday_bias_preferred_over_morning(self):
         """midday > morning lexicographically — midday should win."""

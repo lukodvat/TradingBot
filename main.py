@@ -332,8 +332,16 @@ def run_quant_job(
     # Account snapshot
     snap = broker.snapshot()
 
-    # Circuit breaker
-    cb = risk.check_circuit_breaker(snap.daily_pnl, snap.equity)
+    # Capture today's open equity on the first run of the day so the circuit
+    # breaker reacts to intraday losses the system causes, not overnight gaps.
+    open_equity = store.get_open_equity_for_date(conn, today_str)
+    if open_equity is None:
+        open_equity = snap.equity
+        store.upsert_daily_pnl(conn, date=today_str, open_equity=open_equity)
+
+    # Circuit breaker — intraday drawdown from today's open, not last close.
+    intraday_pnl = snap.equity - open_equity
+    cb = risk.check_circuit_breaker(intraday_pnl, open_equity)
     if cb.triggered:
         log.critical(
             "CIRCUIT BREAKER — daily_pnl=%.2f%% — liquidating all",
@@ -363,7 +371,7 @@ def run_quant_job(
     minutes_to_close = _minutes_to_market_close(run_dt)
     is_flatten_window = minutes_to_close <= settings.flatten_before_close_minutes
 
-    if is_flatten_window or is_fr:
+    if is_flatten_window:
         pm.manage_flattens(
             positions, biases=biases,
             run_dt=run_dt, run_timestamp=run_timestamp,
@@ -373,11 +381,11 @@ def run_quant_job(
     # Same-ticker cooldown
     held_today = pm.get_held_today(today_str)
 
-    # Fetch OHLCV for all watchlist tickers + SPY (80 days for regime/near-high/rel-strength)
+    # Fetch OHLCV for all watchlist tickers + SPY (260 days for EMA(200) regime + 63-bar near-high)
     symbols = load_watchlist(settings.watchlist_path)
     sector_map = load_sector_map(settings.watchlist_path)
     all_symbols = list(set(symbols + ["SPY"]))
-    all_bars = market_data.get_daily_bars(all_symbols, lookback_days=80)
+    all_bars = market_data.get_daily_bars(all_symbols, lookback_days=260)
 
     spy_bars = all_bars.pop("SPY", None)
     bars = {sym: all_bars[sym] for sym in symbols if sym in all_bars}
@@ -570,7 +578,7 @@ def main() -> None:
     log.info("Settings loaded. DB: %s | Reports: %s", settings.db_path, settings.reports_dir)
 
     # --- Backtest gate ---
-    gate_ok, gate_path = check_backtest_gate(settings.reports_dir)
+    gate_ok, gate_path = check_backtest_gate(settings.reports_dir, settings)
     if not gate_ok:
         log.critical(
             "STARTUP BLOCKED: No passing backtest report found in '%s'.\n"

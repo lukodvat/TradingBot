@@ -101,10 +101,10 @@ class SignalScanner:
                 log.debug("SKIP %s — already held today", symbol)
                 continue
 
-            bias = biases.get(symbol)
-            if bias not in ("BULLISH", "BEARISH"):
-                log.debug("SKIP %s — sentiment is %s", symbol, bias or "missing")
-                continue
+            # Veto semantics: bias is a gate, not a signal. Direction comes from
+            # price vs EMA (set inside _evaluate). Only a contradicting bias vetoes:
+            # BEARISH blocks LONG, BULLISH blocks SHORT. NEUTRAL/missing is permitted.
+            bias = biases.get(symbol) or "NEUTRAL"
 
             candidate = self._evaluate(symbol, df, bias)
             if candidate is not None:
@@ -159,25 +159,38 @@ class SignalScanner:
         curr_vol = float(volume.iloc[-1])
         volume_ratio = curr_vol / avg_vol if avg_vol > 0 else 0.0
 
-        # --- Trend filter ---
-        if bias == "BULLISH" and price <= ema_val:
-            log.debug("SKIP %s — LONG: price %.2f <= EMA %.2f", symbol, price, ema_val)
-            return None
-        if bias == "BEARISH" and price >= ema_val:
-            log.debug("SKIP %s — SHORT: price %.2f >= EMA %.2f", symbol, price, ema_val)
+        # --- Direction from quant trend (price vs EMA) ---
+        if price > ema_val:
+            direction = LONG
+        elif price < ema_val:
+            direction = SHORT
+        else:
+            log.debug("SKIP %s — price == EMA, no directional bias", symbol)
             return None
 
-        # --- RSI filter ---
-        if not (s.rsi_min <= rsi_val <= s.rsi_max):
-            log.debug("SKIP %s — RSI %.1f outside [%.0f, %.0f]", symbol, rsi_val, s.rsi_min, s.rsi_max)
+        # --- Sentiment veto (only a contradicting bias blocks) ---
+        if direction == LONG and bias == "BEARISH":
+            log.debug("SKIP %s — LONG vetoed by BEARISH bias", symbol)
+            return None
+        if direction == SHORT and bias == "BULLISH":
+            log.debug("SKIP %s — SHORT vetoed by BULLISH bias", symbol)
+            return None
+
+        # --- Direction-aware RSI filter ---
+        # LONG wants RSI in [rsi_min, rsi_max] (momentum into strength).
+        # SHORT inverts: RSI in [100-rsi_max, 100-rsi_min] (momentum into weakness).
+        if direction == LONG:
+            rsi_lo, rsi_hi = s.rsi_min, s.rsi_max
+        else:
+            rsi_lo, rsi_hi = 100.0 - s.rsi_max, 100.0 - s.rsi_min
+        if not (rsi_lo <= rsi_val <= rsi_hi):
+            log.debug("SKIP %s — RSI %.1f outside [%.0f, %.0f] for %s", symbol, rsi_val, rsi_lo, rsi_hi, direction)
             return None
 
         # --- Volume filter ---
         if volume_ratio < s.volume_multiplier:
             log.debug("SKIP %s — volume ratio %.2f < %.1f", symbol, volume_ratio, s.volume_multiplier)
             return None
-
-        direction = LONG if bias == "BULLISH" else SHORT
 
         # --- Relative strength vs SPY (longs only) ---
         if (
@@ -244,10 +257,14 @@ def _compute_conviction(
     rsi_range = s.rsi_max - s.rsi_min  # typically 30
 
     if direction == LONG:
-        rsi_score = (rsi - s.rsi_min) / rsi_range
+        rsi_lo, rsi_hi = s.rsi_min, s.rsi_max
+        rsi_score = (rsi - rsi_lo) / rsi_range
     else:
-        rsi_score = (s.rsi_max - rsi) / rsi_range
+        # SHORT uses the inverted band [100-rsi_max, 100-rsi_min]; lower RSI = stronger.
+        rsi_lo, rsi_hi = 100.0 - s.rsi_max, 100.0 - s.rsi_min
+        rsi_score = (rsi_hi - rsi) / rsi_range
 
+    rsi_score = max(0.0, min(1.0, rsi_score))
     vol_score = min(volume_ratio / 3.0, 1.0)
 
     return round(0.5 * rsi_score + 0.5 * vol_score, 4)
