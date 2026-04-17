@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 import pandas_ta as pta   # functional API — avoids DataFrame accessor ambiguity
 
+from analysis.volatility import compute_atr_pct
 from backtest.metrics import BacktestMetrics, BacktestTrade, compute_metrics
 from config.settings import Settings
 from data.market import load_sector_map
@@ -195,10 +196,45 @@ class BacktestHarness:
                 exit_result = self._check_exits(pos, today_bar)
                 if exit_result:
                     exit_price, exit_reason = exit_result
-                    trade = self._close_position(pos, exit_price, today, exit_reason)
-                    equity += trade.pnl
-                    completed_trades.append(trade)
-                    del open_positions[symbol]
+                    if exit_reason == "partial_exit":
+                        # Emit a trade for the partial qty, reduce the position,
+                        # then re-evaluate exits on the residual within the same bar.
+                        partial_qty = pos.qty * self._settings.partial_exit_fraction
+                        partial_qty = float(int(partial_qty * 100) / 100)
+                        if partial_qty > 0:
+                            partial_pnl = (exit_price - pos.entry_price) * partial_qty
+                            partial_pnl_pct = (exit_price - pos.entry_price) / pos.entry_price
+                            completed_trades.append(BacktestTrade(
+                                symbol=pos.symbol,
+                                entry_date=pos.entry_date,
+                                exit_date=today,
+                                side="long",
+                                entry_price=pos.entry_price,
+                                exit_price=exit_price,
+                                qty=partial_qty,
+                                pnl=partial_pnl,
+                                pnl_pct=partial_pnl_pct,
+                                exit_reason="partial_exit",
+                            ))
+                            equity += partial_pnl
+                            pos.qty -= partial_qty
+                        pos.partial_exit_done = True
+                        # Re-check exits for trailing/stop on residual within same bar
+                        if pos.qty > 0:
+                            second = self._check_exits(pos, today_bar)
+                            if second:
+                                ex_price, ex_reason = second
+                                trade = self._close_position(pos, ex_price, today, ex_reason)
+                                equity += trade.pnl
+                                completed_trades.append(trade)
+                                del open_positions[symbol]
+                        else:
+                            del open_positions[symbol]
+                    else:
+                        trade = self._close_position(pos, exit_price, today, exit_reason)
+                        equity += trade.pnl
+                        completed_trades.append(trade)
+                        del open_positions[symbol]
 
             # --- Step 2: Scan for new entries (signal on today, entry tomorrow) ---
             next_day = all_dates[i + 1] if i + 1 < len(all_dates) else None
@@ -228,10 +264,24 @@ class BacktestHarness:
                     # Entry at next day's OPEN + slippage (lookahead-free)
                     raw_entry = float(next_bar["open"])
                     entry_price = raw_entry * (1 + self._slippage_mult)
-                    stop_price = entry_price * (1 - self._settings.stop_loss_pct)
 
-                    qty = self._compute_qty(equity, entry_price, symbol)
+                    # ATR-based stop and risk-based sizing — mirrors live RiskManager.
+                    history = self._bars[symbol][self._bars[symbol].index.date <= today]
+                    atr_pct = compute_atr_pct(history, self._settings.atr_period)
+                    stop_pct = self._resolve_stop_pct(atr_pct)
+                    stop_price = entry_price * (1 - stop_pct)
+
+                    qty = self._compute_qty(equity, entry_price, stop_pct)
                     if qty <= 0:
+                        continue
+
+                    # Portfolio heat cap — aggregate open dollar-risk
+                    new_risk = qty * (entry_price - stop_price)
+                    open_risk = sum(
+                        p.qty * (p.entry_price - p.stop_price)
+                        for p in open_positions.values()
+                    )
+                    if open_risk + new_risk > equity * self._settings.max_portfolio_heat:
                         continue
 
                     open_positions[symbol] = _OpenPosition(
@@ -457,11 +507,24 @@ class BacktestHarness:
         bar_high = float(bar["high"])
         s = self._settings
 
-        # 1. Take-profit: exit if high reaches target price
+        # 1. Take-profit: exit if high reaches target price (full close)
         take_profit_price = pos.entry_price * (1 + s.take_profit_pct)
         if bar_high >= take_profit_price:
             exit_price = take_profit_price * (1 - self._slippage_mult)
             return exit_price, "take_profit"
+
+        # 1b. Partial exit (single-shot): if high hits trigger and we haven't
+        # already partial-exited this position, signal a partial. The simulate
+        # loop handles the special "partial_exit" reason by emitting a trade
+        # for half the qty and keeping the residual position open.
+        if (
+            s.partial_exit_enabled
+            and not pos.partial_exit_done
+            and bar_high >= pos.entry_price * (1 + s.partial_exit_trigger_pct)
+        ):
+            partial_price = pos.entry_price * (1 + s.partial_exit_trigger_pct)
+            exit_price = partial_price * (1 - self._slippage_mult)
+            return exit_price, "partial_exit"
 
         # 2. Check trailing stop activation BEFORE checking if stop was hit.
         #    High may have triggered trail; low may have then hit the trail.
@@ -489,11 +552,28 @@ class BacktestHarness:
     # Position helpers
     # -------------------------------------------------------------------------
 
-    def _compute_qty(self, equity: float, entry_price: float, symbol: str) -> float:
-        """Size position to max_position_pct of equity, floored to 2dp."""
-        max_notional = equity * self._settings.max_position_pct
-        qty = max_notional / entry_price
-        return float(int(qty * 100) / 100)  # floor to 2dp
+    def _resolve_stop_pct(self, atr_pct: Optional[float]) -> float:
+        """ATR-derived stop distance, floored at min_stop_pct. Falls back to fixed."""
+        s = self._settings
+        if atr_pct is None or atr_pct <= 0:
+            return s.stop_loss_pct
+        return max(s.atr_stop_multiplier * atr_pct, s.min_stop_pct)
+
+    def _compute_qty(self, equity: float, entry_price: float, stop_pct: float) -> float:
+        """
+        Risk-based sizing: shares so that qty × stop_distance ≈ risk_per_trade.
+        Capped at max_position_pct of equity. Floored to 2dp (fractional shares).
+        """
+        s = self._settings
+        max_notional = equity * s.max_position_pct
+        if stop_pct > 0:
+            risk_dollars = s.risk_per_trade_pct * equity
+            risk_notional = risk_dollars / stop_pct
+            target_notional = min(risk_notional, max_notional)
+        else:
+            target_notional = max_notional
+        qty = target_notional / entry_price if entry_price > 0 else 0
+        return float(int(qty * 100) / 100)
 
     def _close_position(
         self,
@@ -560,6 +640,7 @@ class _OpenPosition:
     __slots__ = (
         "symbol", "entry_date", "entry_price", "stop_price",
         "qty", "trailing_activated", "trail_stop_price",
+        "partial_exit_done",
     )
 
     def __init__(
@@ -571,6 +652,7 @@ class _OpenPosition:
         qty: float,
         trailing_activated: bool,
         trail_stop_price: Optional[float],
+        partial_exit_done: bool = False,
     ) -> None:
         self.symbol = symbol
         self.entry_date = entry_date
@@ -579,6 +661,7 @@ class _OpenPosition:
         self.qty = qty
         self.trailing_activated = trailing_activated
         self.trail_stop_price = trail_stop_price
+        self.partial_exit_done = partial_exit_done
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +683,9 @@ _FINGERPRINT_FIELDS = (
     "max_position_pct", "max_sector_pct", "max_positions",
     "vol_atr_threshold", "vol_realized_threshold",
     "backtest_slippage_bps",
+    "risk_per_trade_pct", "atr_stop_multiplier", "min_stop_pct",
+    "max_portfolio_heat", "atr_period",
+    "partial_exit_enabled", "partial_exit_trigger_pct", "partial_exit_fraction",
 )
 
 

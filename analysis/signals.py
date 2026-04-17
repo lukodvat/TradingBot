@@ -74,6 +74,7 @@ class SignalScanner:
         bars: dict[str, pd.DataFrame],
         date: str,
         held_today: Optional[set[str]] = None,
+        volume_multiplier_override: Optional[float] = None,
     ) -> list[SignalCandidate]:
         """
         Scan vol-filtered bars for entry setups.
@@ -106,7 +107,7 @@ class SignalScanner:
             # BEARISH blocks LONG, BULLISH blocks SHORT. NEUTRAL/missing is permitted.
             bias = biases.get(symbol) or "NEUTRAL"
 
-            candidate = self._evaluate(symbol, df, bias)
+            candidate = self._evaluate(symbol, df, bias, volume_multiplier_override)
             if candidate is not None:
                 candidates.append(candidate)
 
@@ -126,6 +127,7 @@ class SignalScanner:
         symbol: str,
         df: pd.DataFrame,
         bias: str,
+        volume_multiplier_override: Optional[float] = None,
     ) -> Optional[SignalCandidate]:
         """
         Apply technical criteria for one ticker. Returns None if criteria not met.
@@ -187,9 +189,14 @@ class SignalScanner:
             log.debug("SKIP %s — RSI %.1f outside [%.0f, %.0f] for %s", symbol, rsi_val, rsi_lo, rsi_hi, direction)
             return None
 
-        # --- Volume filter ---
-        if volume_ratio < s.volume_multiplier:
-            log.debug("SKIP %s — volume ratio %.2f < %.1f", symbol, volume_ratio, s.volume_multiplier)
+        # --- Volume filter (with optional session-aware override) ---
+        vol_threshold = (
+            volume_multiplier_override
+            if volume_multiplier_override is not None
+            else s.volume_multiplier
+        )
+        if volume_ratio < vol_threshold:
+            log.debug("SKIP %s — volume ratio %.2f < %.1f", symbol, volume_ratio, vol_threshold)
             return None
 
         # --- Relative strength vs SPY (longs only) ---

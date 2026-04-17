@@ -190,6 +190,197 @@ class TestPositionSizing:
 
 
 # ---------------------------------------------------------------------------
+# ATR-based sizing (Phase A)
+# ---------------------------------------------------------------------------
+
+class TestATRSizing:
+    """Sizing path that scales qty by per-ticker ATR for uniform dollar-risk."""
+
+    SECTOR_MAP = {"NVDA": "technology", "JNJ": "healthcare"}
+
+    def _size(self, rm, **overrides):
+        defaults = dict(
+            symbol="NVDA",
+            sector="technology",
+            side=OrderSide.BUY,
+            limit_price=100.0,
+            equity=10_000.0,
+            open_positions=[],
+            sector_map=self.SECTOR_MAP,
+            buying_power=10_000.0,
+        )
+        defaults.update(overrides)
+        return rm.size_position(**defaults)
+
+    def test_atr_sizing_uses_atr_multiplier_for_stop(self):
+        rm = make_rm(atr_stop_multiplier=1.5, min_stop_pct=0.01)
+        # ATR/price = 2% → stop_pct = 1.5 * 2% = 3%
+        result = self._size(rm, atr_pct=0.02)
+        assert result.approved
+        assert abs(result.stop_pct - 0.03) < 1e-9
+        assert abs(result.stop_price - 97.0) < 0.01
+
+    def test_atr_sizing_respects_min_stop_pct_floor(self):
+        rm = make_rm(atr_stop_multiplier=1.5, min_stop_pct=0.015)
+        # 1.5 × 0.005 = 0.0075 → floored to 0.015
+        result = self._size(rm, atr_pct=0.005)
+        assert result.approved
+        assert abs(result.stop_pct - 0.015) < 1e-9
+
+    def test_atr_sizing_dollar_risk_uniform(self):
+        """Higher ATR → fewer shares, same dollar-risk (risk-target dominates max_pos cap)."""
+        # risk = 0.1% * $10k = $10. low-vol notional = $10/0.015 = $666; high-vol = $10/0.06 = $166.
+        # Both fit comfortably under max_position_pct ($1000) so risk-based sizing dominates.
+        rm = make_rm(risk_per_trade_pct=0.001, atr_stop_multiplier=1.5)
+        low_vol = self._size(rm, atr_pct=0.01)
+        high_vol = self._size(rm, atr_pct=0.04)
+        assert abs(low_vol.risk_dollars - 10.0) < 1.0
+        assert abs(high_vol.risk_dollars - 10.0) < 1.0
+        assert high_vol.qty < low_vol.qty
+
+    def test_atr_sizing_capped_at_max_position_pct(self):
+        """When ATR is very tight, risk-based qty would exceed max_position_pct cap."""
+        rm = make_rm(
+            risk_per_trade_pct=0.01,
+            atr_stop_multiplier=1.5,
+            min_stop_pct=0.001,
+            max_position_pct=0.10,
+        )
+        result = self._size(rm, atr_pct=0.001, equity=10_000.0)
+        # Cap is 10% of $10k = $1000 notional
+        assert result.notional <= 1000.0 + 0.01
+
+    def test_atr_sizing_falls_back_to_fixed_when_atr_none(self):
+        rm = make_rm(stop_loss_pct=0.02)
+        result = self._size(rm, atr_pct=None)
+        assert result.approved
+        assert abs(result.stop_pct - 0.02) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Portfolio heat cap (Phase A)
+# ---------------------------------------------------------------------------
+
+class TestPortfolioHeatCap:
+
+    SECTOR_MAP = {"AAPL": "technology", "JPM": "finance", "JNJ": "healthcare"}
+
+    def _size(self, rm, positions, **overrides):
+        defaults = dict(
+            symbol="JNJ",
+            sector="healthcare",
+            side=OrderSide.BUY,
+            limit_price=100.0,
+            equity=10_000.0,
+            open_positions=positions,
+            sector_map=self.SECTOR_MAP,
+            buying_power=10_000.0,
+            atr_pct=0.02,
+        )
+        defaults.update(overrides)
+        return rm.size_position(**defaults)
+
+    def test_heat_cap_rejects_when_existing_risk_high(self):
+        # max_portfolio_heat=0.04 → $400 cap on $10k.
+        # Two existing tech positions each $1500 cost_basis × 2% stop = $30 each = $60 used.
+        # New trade with stop_pct=3% × $1k notional = $30 risk → total $90, within cap → approved.
+        rm = make_rm(max_portfolio_heat=0.04, stop_loss_pct=0.02)
+        positions = [
+            make_position("AAPL", sector_value=1500.0),
+            make_position("JPM", sector_value=1500.0),
+        ]
+        positions[0].cost_basis = "1500"
+        positions[1].cost_basis = "1500"
+        result = self._size(rm, positions)
+        assert result.approved
+
+    def test_heat_cap_rejects_when_aggregate_exceeds_cap(self):
+        # max_portfolio_heat=0.005 → $50 cap on $10k.
+        # Existing $5000 cost_basis × 2% = $100 already over the cap.
+        rm = make_rm(max_portfolio_heat=0.005, stop_loss_pct=0.02)
+        existing = make_position("AAPL", sector_value=5000.0)
+        existing.cost_basis = "5000"
+        result = self._size(rm, [existing])
+        assert not result.approved
+        assert result.rejection_reason == RejectionReason.PORTFOLIO_HEAT
+
+    def test_estimate_open_risk_sums_cost_basis_times_stop(self):
+        rm = make_rm(stop_loss_pct=0.02)
+        positions = [make_position("AAPL", 0), make_position("JPM", 0)]
+        positions[0].cost_basis = "1000"
+        positions[1].cost_basis = "2000"
+        # 1000 * 0.02 + 2000 * 0.02 = 60
+        assert rm.estimate_open_risk(positions) == pytest.approx(60.0)
+
+
+# ---------------------------------------------------------------------------
+# Sentiment-as-sizer (Phase C)
+# ---------------------------------------------------------------------------
+
+class TestSentimentSizer:
+    """Bias matching trade direction scales notional up; mismatched bias is ignored."""
+
+    SECTOR_MAP = {"NVDA": "technology"}
+
+    def _size(self, rm, **overrides):
+        defaults = dict(
+            symbol="NVDA",
+            sector="technology",
+            side=OrderSide.BUY,
+            limit_price=100.0,
+            equity=10_000.0,
+            open_positions=[],
+            sector_map=self.SECTOR_MAP,
+            buying_power=10_000.0,
+            atr_pct=0.02,
+        )
+        defaults.update(overrides)
+        return rm.size_position(**defaults)
+
+    def test_bullish_bias_scales_long_up(self):
+        rm = make_rm(
+            risk_per_trade_pct=0.001, atr_stop_multiplier=1.5,
+            sentiment_size_multiplier=1.5,
+        )
+        baseline = self._size(rm, sentiment_bias="NEUTRAL")
+        scaled = self._size(rm, sentiment_bias="BULLISH")
+        assert scaled.notional > baseline.notional
+        # Allow share-floor rounding overshoot (1 share at limit_price)
+        assert scaled.notional <= baseline.notional * 1.5 + 100.0
+
+    def test_bearish_bias_does_not_scale_long(self):
+        rm = make_rm(sentiment_size_multiplier=1.5)
+        baseline = self._size(rm, sentiment_bias="NEUTRAL")
+        with_bearish = self._size(rm, sentiment_bias="BEARISH")
+        # Long with BEARISH bias is NOT a match → no scaling
+        assert with_bearish.notional == baseline.notional
+
+    def test_bearish_bias_scales_short(self):
+        rm = make_rm(
+            risk_per_trade_pct=0.001, atr_stop_multiplier=1.5,
+            sentiment_size_multiplier=1.5,
+        )
+        baseline = self._size(rm, side=OrderSide.SELL, sentiment_bias="NEUTRAL")
+        scaled = self._size(rm, side=OrderSide.SELL, sentiment_bias="BEARISH")
+        assert scaled.notional > baseline.notional
+
+    def test_scaled_notional_capped_at_max_position_pct(self):
+        # Even with aggressive multiplier, never exceed max_position_pct cap.
+        rm = make_rm(
+            risk_per_trade_pct=0.005, atr_stop_multiplier=1.5,
+            sentiment_size_multiplier=10.0, max_position_pct=0.10,
+        )
+        result = self._size(rm, sentiment_bias="BULLISH", equity=10_000.0)
+        assert result.notional <= 1000.0 + 0.01
+
+    def test_no_multiplier_when_equal_to_one(self):
+        rm = make_rm(sentiment_size_multiplier=1.0)
+        baseline = self._size(rm, sentiment_bias="NEUTRAL")
+        with_bias = self._size(rm, sentiment_bias="BULLISH")
+        assert with_bias.notional == baseline.notional
+
+
+# ---------------------------------------------------------------------------
 # Stop price calculation
 # ---------------------------------------------------------------------------
 

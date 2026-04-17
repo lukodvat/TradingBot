@@ -147,6 +147,66 @@ class TestUnrealizedPct:
 
 
 # ---------------------------------------------------------------------------
+# manage_partial_exits tests
+# ---------------------------------------------------------------------------
+
+class TestManagePartialExits:
+    def _seed_entry(self, conn, symbol, run_ts="2025-04-10T14:30:00+00:00"):
+        conn.execute(
+            """INSERT INTO trades(order_id, symbol, side, qty, fill_price,
+               notional, session, run_timestamp)
+               VALUES (?, ?, 'buy', 10, 100, 1000, 'morning', ?)""",
+            (f"oid-{symbol}", symbol, run_ts),
+        )
+        conn.commit()
+        return run_ts
+
+    def test_no_op_when_disabled(self):
+        s = make_settings(partial_exit_enabled=False)
+        pm, broker, _ = make_manager(settings=s)
+        pos = make_position(unrealized_plpc=0.05)
+        assert pm.manage_partial_exits([pos], "2025-04-13T15:30:00+00:00") == 0
+        broker.submit_market_order.assert_not_called()
+
+    def test_skips_when_below_trigger(self):
+        pm, broker, conn = make_manager()
+        self._seed_entry(conn, "AAPL")
+        pos = make_position(symbol="AAPL", unrealized_plpc=0.02)  # below 3% default
+        assert pm.manage_partial_exits([pos], "2025-04-13T15:30:00+00:00") == 0
+        broker.submit_market_order.assert_not_called()
+
+    def test_fires_at_or_above_trigger(self):
+        from alpaca.trading.enums import OrderSide
+        pm, broker, conn = make_manager()
+        self._seed_entry(conn, "AAPL")
+        broker.submit_market_order.return_value = MagicMock(id="ord-1")
+        pos = make_position(symbol="AAPL", qty=10.0, unrealized_plpc=0.04)
+        count = pm.manage_partial_exits([pos], "2025-04-13T15:30:00+00:00")
+        assert count == 1
+        broker.submit_market_order.assert_called_once_with(
+            symbol="AAPL", side=OrderSide.SELL, qty=5.0,
+        )
+
+    def test_fires_only_once_per_entry(self):
+        pm, broker, conn = make_manager()
+        entry_ts = self._seed_entry(conn, "AAPL")
+        broker.submit_market_order.return_value = MagicMock(id="ord-1")
+        pos = make_position(symbol="AAPL", qty=10.0, unrealized_plpc=0.04)
+        pm.manage_partial_exits([pos], "2025-04-13T15:30:00+00:00")
+        # Re-run with same position — should not fire again
+        broker.submit_market_order.reset_mock()
+        count = pm.manage_partial_exits([pos], "2025-04-13T15:35:00+00:00")
+        assert count == 0
+        broker.submit_market_order.assert_not_called()
+
+    def test_skips_when_no_entry_record(self):
+        pm, broker, _ = make_manager()
+        pos = make_position(symbol="MSFT", unrealized_plpc=0.05)
+        assert pm.manage_partial_exits([pos], "2025-04-13T15:30:00+00:00") == 0
+        broker.submit_market_order.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # manage_trailing_stops tests
 # ---------------------------------------------------------------------------
 

@@ -65,6 +65,76 @@ class PortfolioManager:
         self._conn = conn
 
     # -------------------------------------------------------------------------
+    # Partial profit-taking
+    # -------------------------------------------------------------------------
+
+    def manage_partial_exits(
+        self,
+        positions: list[Position],
+        run_timestamp: str,
+    ) -> int:
+        """
+        Scale out a fraction of each position once it hits the partial-exit trigger.
+
+        Fires at most once per entry — guarded by the partial_exits SQLite table.
+        Leaves the residual position intact; the trailing stop activation logic
+        (which kicks in at trail_activation_pct) protects what's left.
+
+        Returns the number of partial exits triggered this run.
+        """
+        if not self._s.partial_exit_enabled:
+            return 0
+
+        triggered = 0
+        for position in positions:
+            symbol = position.symbol
+            unrealized_pct = _unrealized_pct(position)
+
+            if unrealized_pct < self._s.partial_exit_trigger_pct:
+                continue
+
+            entry_run_ts = store.get_latest_entry_run_ts(self._conn, symbol)
+            if entry_run_ts is None:
+                log.debug("Partial exit: no entry record for %s — skip", symbol)
+                continue
+
+            if store.has_partial_exit_since(self._conn, symbol, entry_run_ts):
+                log.debug("Partial exit already done for %s — skip", symbol)
+                continue
+
+            qty = float(position.qty or 0)
+            partial_qty = abs(qty) * self._s.partial_exit_fraction
+            # Whole-share floor — Alpaca rejects fractional sells smaller than 1
+            partial_qty = float(int(partial_qty))
+            if partial_qty <= 0:
+                log.debug("Partial exit: computed qty %s for %s is zero — skip", partial_qty, symbol)
+                continue
+
+            side = OrderSide.SELL if qty > 0 else OrderSide.BUY
+            try:
+                order = self._broker.submit_market_order(
+                    symbol=symbol, side=side, qty=partial_qty,
+                )
+                store.record_partial_exit(
+                    self._conn,
+                    symbol=symbol,
+                    entry_run_ts=entry_run_ts,
+                    qty_sold=partial_qty,
+                    fill_price=None,  # filled async; reconcile picks it up
+                    order_id=str(order.id) if order is not None else None,
+                    exit_at=run_timestamp,
+                )
+                triggered += 1
+                log.info(
+                    "Partial exit %s: sold %.2f @ market (unrealized=%.2f%%)",
+                    symbol, partial_qty, unrealized_pct * 100,
+                )
+            except Exception as exc:
+                log.error("Partial exit failed for %s: %s", symbol, exc)
+
+        return triggered
+
+    # -------------------------------------------------------------------------
     # Trailing stop activation
     # -------------------------------------------------------------------------
 

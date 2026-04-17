@@ -319,6 +319,7 @@ class TestRunQuantJob:
 
         pm = MagicMock()
         pm.get_held_today.return_value = set()
+        pm.manage_partial_exits.return_value = 0
         mock_pm_cls.return_value = pm
 
         md.get_daily_bars.return_value = {}

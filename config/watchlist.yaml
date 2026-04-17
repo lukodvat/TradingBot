@@ -87,3 +87,55 @@ tickers:
   - symbol: MCD
     sector: consumer
     name: McDonald's Corp.
+
+  # Semiconductors (4 tickers)
+  - symbol: AVGO
+    sector: semiconductors
+    name: Broadcom Inc.
+
+  - symbol: MU
+    sector: semiconductors
+    name: Micron Technology Inc.
+
+  - symbol: TSM
+    sector: semiconductors
+    name: Taiwan Semiconductor Mfg.
+
+  - symbol: QCOM
+    sector: semiconductors
+    name: Qualcomm Inc.
+
+  # Fintech / payments (3 tickers)
+  - symbol: V
+    sector: fintech
+    name: Visa Inc.
+
+  - symbol: MA
+    sector: fintech
+    name: Mastercard Inc.
+
+  - symbol: PYPL
+    sector: fintech
+    name: PayPal Holdings Inc.
+
+  # Industrials (3 tickers)
+  - symbol: CAT
+    sector: industrials
+    name: Caterpillar Inc.
+
+  - symbol: DE
+    sector: industrials
+    name: Deere & Co.
+
+  - symbol: BA
+    sector: industrials
+    name: Boeing Co.
+
+  # Biotech (2 tickers)
+  - symbol: MRNA
+    sector: biotech
+    name: Moderna Inc.
+
+  - symbol: REGN
+    sector: biotech
+    name: Regeneron Pharmaceuticals.

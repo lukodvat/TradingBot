@@ -195,6 +195,23 @@ CREATE TABLE IF NOT EXISTS volatility_filter_log (
 
 CREATE INDEX IF NOT EXISTS idx_vol_filter_run    ON volatility_filter_log(run_timestamp);
 CREATE INDEX IF NOT EXISTS idx_vol_filter_symbol ON volatility_filter_log(symbol);
+
+-- -----------------------------------------------------------------------
+-- partial_exits: one row per partial profit-taking action
+-- Used to ensure each position is partially exited at most once.
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS partial_exits (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT    NOT NULL,
+    entry_run_ts    TEXT    NOT NULL,        -- run_timestamp of the entry trade
+    qty_sold        REAL    NOT NULL,
+    fill_price      REAL,
+    order_id        TEXT,
+    exit_at         TEXT    NOT NULL,        -- ISO8601 of when the partial fired
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_partial_exits_symbol ON partial_exits(symbol);
 """
 
 
@@ -229,4 +246,5 @@ EXPECTED_TABLES = {
     "sentiment_bias",
     "session_log",
     "volatility_filter_log",
+    "partial_exits",
 }

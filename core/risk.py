@@ -31,6 +31,7 @@ class RejectionReason(str, Enum):
     ZERO_SHARES = "computed_qty_is_zero"
     CIRCUIT_BREAKER = "daily_circuit_breaker_triggered"
     ALREADY_HELD = "ticker_already_held"
+    PORTFOLIO_HEAT = "portfolio_heat_exceeded"
 
 
 @dataclass
@@ -42,6 +43,8 @@ class SizingResult:
     notional: float                   # qty * limit_price
     take_profit_price: Optional[float] = None   # None when not approved
     rejection_reason: Optional[RejectionReason] = None
+    stop_pct: float = 0.0             # actual stop distance used (ATR-derived or fixed)
+    risk_dollars: float = 0.0         # qty × (entry - stop) — open risk this trade contributes
 
 
 @dataclass
@@ -122,18 +125,26 @@ class RiskManager:
         open_positions: list[Position],
         sector_map: dict[str, str],       # symbol -> sector for open positions
         buying_power: float,
+        atr_pct: Optional[float] = None,  # ATR/price ratio; enables ATR-based sizing
+        sentiment_bias: Optional[str] = None,  # BULLISH|BEARISH|NEUTRAL — scales notional when matching
     ) -> SizingResult:
         """
         Compute approved position size after all risk pre-checks.
 
+        Sizing model:
+          - When atr_pct is provided: ATR-based. Stop distance = max(
+              atr_stop_multiplier × atr_pct, min_stop_pct). Qty derived so that
+              qty × stop_distance ≈ risk_per_trade_pct × equity. Each trade
+              contributes the same dollar-risk regardless of ticker volatility.
+          - When atr_pct is None: legacy fixed sizing at max_position_pct,
+              stop_loss_pct from settings.
+
         Checks (in order):
         1. Already holding this ticker?
         2. Open position count < max_positions?
-        3. Adding this position would breach sector concentration?
-        4. Computed notional fits within buying power?
-
-        Returns SizingResult with approved=False and rejection_reason if any
-        check fails.
+        3. Sector concentration headroom (caps notional).
+        4. Portfolio heat cap — aggregate open dollar-risk ≤ max_portfolio_heat × equity.
+        5. Computed notional fits within buying power?
         """
         # 1. Already holding?
         held_symbols = {str(p.symbol) for p in open_positions}
@@ -144,31 +155,56 @@ class RiskManager:
         if len(open_positions) >= self._s.max_positions:
             return self._reject(0, limit_price, RejectionReason.POSITION_LIMIT)
 
-        # 3. Sector concentration check
+        # 3. Sector concentration headroom
         sector_notional = self._sector_notional(sector, open_positions, sector_map)
         max_sector_notional = equity * self._s.max_sector_pct
         max_position_notional = equity * self._s.max_position_pct
-
-        # How much room remains in this sector?
         sector_headroom = max_sector_notional - sector_notional
         if sector_headroom <= 0:
             return self._reject(0, limit_price, RejectionReason.SECTOR_CONCENTRATION)
 
-        # Notional is the smaller of: max position size OR sector headroom
-        target_notional = min(max_position_notional, sector_headroom)
-        qty = target_notional / limit_price if limit_price > 0 else 0
-        qty = self._floor_shares(qty)
+        # Resolve effective stop distance (ATR-based or fallback fixed)
+        stop_pct = self._resolve_stop_pct(atr_pct)
 
+        # Risk-based target notional (if atr_pct given) vs flat max-position notional
+        if atr_pct is not None and stop_pct > 0:
+            risk_dollars_target = self._s.risk_per_trade_pct * equity
+            risk_based_notional = risk_dollars_target / stop_pct
+            target_notional = min(risk_based_notional, max_position_notional, sector_headroom)
+        else:
+            target_notional = min(max_position_notional, sector_headroom)
+
+        # Sentiment-as-sizer: scale up when bias matches the trade direction.
+        # Cap above by max_position_notional and sector_headroom so we never breach hard limits.
+        if sentiment_bias and self._s.sentiment_size_multiplier > 1.0:
+            matches = (
+                (side == OrderSide.BUY and sentiment_bias == "BULLISH")
+                or (side == OrderSide.SELL and sentiment_bias == "BEARISH")
+            )
+            if matches:
+                target_notional = min(
+                    target_notional * self._s.sentiment_size_multiplier,
+                    max_position_notional,
+                    sector_headroom,
+                )
+
+        qty = self._floor_shares(target_notional / limit_price) if limit_price > 0 else 0
         if qty <= 0:
             return self._reject(0, limit_price, RejectionReason.ZERO_SHARES)
 
         actual_notional = qty * limit_price
+        new_risk = qty * limit_price * stop_pct
 
-        # 4. Buying power
+        # 4. Portfolio heat cap — aggregate open risk including this trade
+        existing_risk = self._estimate_open_risk(open_positions)
+        if existing_risk + new_risk > self._s.max_portfolio_heat * equity:
+            return self._reject(0, limit_price, RejectionReason.PORTFOLIO_HEAT)
+
+        # 5. Buying power
         if actual_notional > buying_power:
             return self._reject(qty, limit_price, RejectionReason.INSUFFICIENT_BUYING_POWER)
 
-        stop_price = self._compute_stop(limit_price, side)
+        stop_price = self._compute_stop(limit_price, side, stop_pct)
         take_profit_price = self._compute_take_profit(limit_price, side)
 
         return SizingResult(
@@ -178,6 +214,8 @@ class RiskManager:
             stop_price=stop_price,
             notional=actual_notional,
             take_profit_price=take_profit_price,
+            stop_pct=stop_pct,
+            risk_dollars=new_risk,
         )
 
     # -------------------------------------------------------------------------
@@ -289,10 +327,44 @@ class RiskManager:
     # Internal helpers
     # -------------------------------------------------------------------------
 
-    def _compute_stop(self, entry_price: float, side: OrderSide) -> float:
+    def _compute_stop(
+        self,
+        entry_price: float,
+        side: OrderSide,
+        stop_pct: Optional[float] = None,
+    ) -> float:
+        pct = stop_pct if stop_pct is not None else self._s.stop_loss_pct
         if side == OrderSide.BUY:
-            return round(entry_price * (1 - self._s.stop_loss_pct), 2)
-        return round(entry_price * (1 + self._s.stop_loss_pct), 2)
+            return round(entry_price * (1 - pct), 2)
+        return round(entry_price * (1 + pct), 2)
+
+    def _resolve_stop_pct(self, atr_pct: Optional[float]) -> float:
+        """ATR-derived stop distance, floored at min_stop_pct. Falls back to fixed."""
+        if atr_pct is None or atr_pct <= 0:
+            return self._s.stop_loss_pct
+        return max(self._s.atr_stop_multiplier * atr_pct, self._s.min_stop_pct)
+
+    def _estimate_open_risk(self, positions: list[Position]) -> float:
+        """
+        Approximate aggregate open dollar-risk across current positions.
+
+        We don't store per-position stop prices yet, so we use cost_basis ×
+        stop_loss_pct as a conservative-ish proxy. Tighter ATR stops will
+        under-estimate; wider ATR stops will under-estimate. Acceptable for
+        the heat cap's purpose — preventing pile-on of new risk.
+        """
+        total = 0.0
+        for pos in positions:
+            try:
+                cb = abs(float(pos.cost_basis or 0))
+            except (TypeError, ValueError):
+                cb = 0.0
+            total += cb * self._s.stop_loss_pct
+        return total
+
+    def estimate_open_risk(self, positions: list[Position]) -> float:
+        """Public wrapper around _estimate_open_risk for callers that want to log."""
+        return self._estimate_open_risk(positions)
 
     def _compute_take_profit(self, entry_price: float, side: OrderSide) -> float:
         if side == OrderSide.BUY:

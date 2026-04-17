@@ -525,6 +525,62 @@ def get_all_sentiment_biases_for_date(
 
 
 # ---------------------------------------------------------------------------
+# Partial exits
+# ---------------------------------------------------------------------------
+
+def record_partial_exit(
+    conn: sqlite3.Connection,
+    *,
+    symbol: str,
+    entry_run_ts: str,
+    qty_sold: float,
+    fill_price: Optional[float],
+    order_id: Optional[str],
+    exit_at: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO partial_exits (
+            symbol, entry_run_ts, qty_sold, fill_price, order_id, exit_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (symbol, entry_run_ts, qty_sold, fill_price, order_id, exit_at),
+    )
+    conn.commit()
+
+
+def has_partial_exit_since(
+    conn: sqlite3.Connection,
+    symbol: str,
+    since_iso: str,
+) -> bool:
+    """True if any partial exit for `symbol` occurred at or after `since_iso`."""
+    row = conn.execute(
+        "SELECT 1 FROM partial_exits WHERE symbol = ? AND exit_at >= ? LIMIT 1",
+        (symbol, since_iso),
+    ).fetchone()
+    return row is not None
+
+
+def get_latest_entry_run_ts(
+    conn: sqlite3.Connection,
+    symbol: str,
+) -> Optional[str]:
+    """Return the run_timestamp of the most recent entry trade for `symbol`."""
+    row = conn.execute(
+        """
+        SELECT run_timestamp
+        FROM trades
+        WHERE symbol = ? AND side IN ('buy', 'sell_short')
+        ORDER BY run_timestamp DESC
+        LIMIT 1
+        """,
+        (symbol,),
+    ).fetchone()
+    return row["run_timestamp"] if row else None
+
+
+# ---------------------------------------------------------------------------
 # Volatility filter log
 # ---------------------------------------------------------------------------
 

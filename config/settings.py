@@ -48,7 +48,24 @@ class Settings(BaseSettings):
         default=0.30, description="Max sector concentration as fraction of equity"
     )
     stop_loss_pct: float = Field(
-        default=0.02, description="Fixed stop-loss distance from entry (2%)"
+        default=0.02,
+        description="Fallback stop-loss distance from entry when ATR is unavailable",
+    )
+    risk_per_trade_pct: float = Field(
+        default=0.005,
+        description="Dollar risk per trade as fraction of equity (0.5% = $50 on $10k)",
+    )
+    atr_stop_multiplier: float = Field(
+        default=1.5,
+        description="Stop distance = atr_stop_multiplier × ATR/price (ATR-based sizing)",
+    )
+    min_stop_pct: float = Field(
+        default=0.01,
+        description="Floor on dynamic stop distance — prevents 0.1% noise stops",
+    )
+    max_portfolio_heat: float = Field(
+        default=0.04,
+        description="Max aggregate open dollar-risk as fraction of equity (4%)",
     )
     trail_pct: float = Field(
         default=0.01, description="Trailing stop distance once activated (1%)"
@@ -77,6 +94,22 @@ class Settings(BaseSettings):
     rsi_max: float = Field(default=80.0, description="RSI upper bound for long entries")
     volume_multiplier: float = Field(
         default=1.2, description="Min current volume vs 20-day average"
+    )
+    volume_multiplier_open: float = Field(
+        default=2.0,
+        description="Stricter volume multiplier for the 10:30 ET opening session",
+    )
+    open_session_minute_marker: int = Field(
+        default=30,
+        description="Marker minute identifying the opening session (10:30 ET)",
+    )
+    no_new_entries_session_minute_marker: int = Field(
+        default=30,
+        description="Final scan minute (15:30 ET) — manage only, no new entries",
+    )
+    sentiment_size_multiplier: float = Field(
+        default=1.25,
+        description="Position-size multiplier when sentiment bias matches direction",
     )
     ema_period: int = Field(default=20, description="EMA period for trend filter")
     rsi_period: int = Field(default=14, description="RSI period")
@@ -190,6 +223,18 @@ class Settings(BaseSettings):
     take_profit_pct: float = Field(
         default=0.06,
         description="Take-profit target as fraction of entry price (6% = close at +6%)",
+    )
+    partial_exit_enabled: bool = Field(
+        default=True,
+        description="Scale out a fraction of the position at the partial-exit trigger",
+    )
+    partial_exit_trigger_pct: float = Field(
+        default=0.03,
+        description="Unrealized gain at which to take partial profits (3%)",
+    )
+    partial_exit_fraction: float = Field(
+        default=0.5,
+        description="Fraction of position to close at the partial-exit trigger (0.5 = half)",
     )
     max_hold_days: int = Field(
         default=10,

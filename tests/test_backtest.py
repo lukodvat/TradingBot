@@ -562,8 +562,66 @@ class TestTakeProfitExit:
 
 
 # ---------------------------------------------------------------------------
-# harness.py — time-based exit (_check_time_exit)
+# harness.py — partial exit logic
 # ---------------------------------------------------------------------------
+
+class TestPartialExit:
+
+    def _make_position(self, entry=100.0, stop=98.0, qty=10.0, partial_done=False):
+        from backtest.harness import _OpenPosition
+        return _OpenPosition(
+            symbol="TEST",
+            entry_date=date(2025, 1, 2),
+            entry_price=entry,
+            stop_price=stop,
+            qty=qty,
+            trailing_activated=False,
+            trail_stop_price=None,
+            partial_exit_done=partial_done,
+        )
+
+    def _make_harness(self, **overrides):
+        s = make_settings(**overrides)
+        return BacktestHarness(s, {}, slippage_bps=0, initial_equity=10_000.0)
+
+    def _bar(self, high, low):
+        return pd.Series({"open": 100.0, "high": float(high), "low": float(low), "close": 100.0})
+
+    def test_partial_exit_fires_when_high_reaches_trigger(self):
+        h = self._make_harness()  # trigger=3%, TP=6%
+        pos = self._make_position()
+        bar = self._bar(high=103.5, low=101)  # past trigger, below TP
+        result = h._check_exits(pos, bar)
+        assert result is not None
+        exit_price, reason = result
+        assert reason == "partial_exit"
+        assert exit_price == pytest.approx(103.0, rel=1e-4)
+
+    def test_partial_exit_does_not_re_fire(self):
+        h = self._make_harness()
+        pos = self._make_position(partial_done=True)
+        # high=104 above trigger (103) but low stays above any activated trail.
+        bar = self._bar(high=104, low=103.1)
+        result = h._check_exits(pos, bar)
+        # Either None (no exit) or trailing_stop — but NOT partial_exit.
+        assert result is None or result[1] != "partial_exit"
+
+    def test_take_profit_wins_over_partial_when_both_hit(self):
+        h = self._make_harness()
+        pos = self._make_position()
+        bar = self._bar(high=107, low=101)  # past 106 TP
+        _, reason = h._check_exits(pos, bar)
+        assert reason == "take_profit"
+
+    def test_partial_disabled_via_settings(self):
+        h = self._make_harness(partial_exit_enabled=False)
+        pos = self._make_position()
+        bar = self._bar(high=104, low=101)  # past trigger
+        # No partial fires; high=104 < trail_activation @ 102 → trail activates,
+        # trail price = 104*0.99 = 102.96 > low=101 — no exit on this bar.
+        result = h._check_exits(pos, bar)
+        # trailing activates but doesn't trigger; no return value yet
+        assert result is None or result[1] != "partial_exit"
 
 class TestTimeBasedExit:
 

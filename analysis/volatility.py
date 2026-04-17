@@ -158,6 +158,18 @@ def _evaluate_ticker(
 # Metric computation
 # ---------------------------------------------------------------------------
 
+def compute_atr_pct(df: pd.DataFrame, period: int = 14) -> Optional[float]:
+    """
+    Public wrapper exposing ATR(period)/close as a fraction.
+
+    Used by sizing layers (core/risk.py + backtest harness) to derive a
+    volatility-aware stop distance. Returns None when bars are insufficient.
+    """
+    if df is None or len(df) < period + 1:
+        return None
+    return _compute_atr_ratio(df, period)
+
+
 def _compute_atr_ratio(df: pd.DataFrame, period: int = 14) -> Optional[float]:
     """
     Compute ATR(period) / latest close price.

@@ -485,3 +485,40 @@ class TestNearHighFilter:
         result = scanner.scan({"AAPL": bars}, TODAY)
         # Result depends on other technical filters
         assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# Time-of-day volume override (Phase C / P10)
+# ---------------------------------------------------------------------------
+
+class TestVolumeMultiplierOverride:
+
+    def test_override_blocks_bar_with_2x_volume_when_threshold_3x(self):
+        """Last bar has 2x volume; 3x override should reject."""
+        s = make_settings(volume_multiplier=1.2, require_relative_strength=False)
+        scanner, conn = make_scanner(s)
+        seed_bias(conn, "AAPL", "BULLISH")
+        bars = {"AAPL": make_bullish_bars()}
+        baseline = scanner.scan(bars, TODAY)
+        assert len(baseline) == 1, "baseline 1.2x threshold must pass"
+
+        result = scanner.scan(bars, TODAY, volume_multiplier_override=3.0)
+        assert result == [], "3.0x override must reject 2.0x last-bar volume"
+
+    def test_override_uses_provided_value_not_settings(self):
+        """Override of 1.5x with 2x volume passes; settings default unused."""
+        s = make_settings(volume_multiplier=10.0, require_relative_strength=False)
+        scanner, conn = make_scanner(s)
+        seed_bias(conn, "AAPL", "BULLISH")
+        result = scanner.scan(
+            {"AAPL": make_bullish_bars()}, TODAY,
+            volume_multiplier_override=1.5,
+        )
+        assert len(result) == 1
+
+    def test_no_override_falls_back_to_settings(self):
+        s = make_settings(volume_multiplier=1.5, require_relative_strength=False)
+        scanner, conn = make_scanner(s)
+        seed_bias(conn, "AAPL", "BULLISH")
+        result = scanner.scan({"AAPL": make_bullish_bars()}, TODAY)
+        assert len(result) == 1

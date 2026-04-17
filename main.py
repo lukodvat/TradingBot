@@ -357,6 +357,11 @@ def run_quant_job(
     pm = PortfolioManager(settings, broker, risk, conn)
     positions = snap.positions
 
+    # Partial exits run BEFORE trailing-stop replacement so the trailing stop
+    # is sized against the residual qty, not the original.
+    if pm.manage_partial_exits(positions, run_timestamp) > 0:
+        positions = broker.snapshot().positions
+
     pm.manage_trailing_stops(positions, run_timestamp)
     pm.manage_time_based_exits(positions, run_timestamp)
 
@@ -438,9 +443,28 @@ def run_quant_job(
     passing_bars = {sym: bars[sym] for sym in passing if sym in bars}
     log.info("Vol filter: %d/%d tickers pass", len(passing), len(symbols))
 
+    # Time-of-day gate: 15:30 ET final scan manages positions only (no new entries).
+    et_now = run_dt.astimezone(_ET)
+    if et_now.hour == settings.run_hour_afternoon and et_now.minute >= settings.no_new_entries_session_minute_marker:
+        log.info("Job B [%s]: 15:30 final scan — managing positions only, no new entries", session)
+        snap = broker.snapshot()
+        pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
+        store.update_session_log(conn, run_timestamp=run_timestamp,
+                                 tickers_evaluated=0, orders_submitted=0)
+        return
+
+    # Time-of-day volume threshold: stricter at 10:30 open, default elsewhere.
+    if et_now.hour == settings.run_hour_morning and et_now.minute == settings.open_session_minute_marker:
+        volume_override = settings.volume_multiplier_open
+    else:
+        volume_override = None
+
     # Signal scan (with relative strength and near-high filters active)
     scanner = SignalScanner(settings, conn, spy_return_20d=spy_return_20d)
-    candidates = scanner.scan(passing_bars, date=today_str, held_today=held_today)
+    candidates = scanner.scan(
+        passing_bars, date=today_str, held_today=held_today,
+        volume_multiplier_override=volume_override,
+    )
 
     # Apply regime direction filter
     if not regime.allow_long_entries:
@@ -471,6 +495,11 @@ def run_quant_job(
         sector = sector_map.get(candidate.symbol, "Unknown")
         side = OrderSide.BUY if candidate.direction == "LONG" else OrderSide.SELL
 
+        # ATR-based sizing: stop distance scales with each ticker's volatility,
+        # share count is set so dollar-risk per trade is uniform across the book.
+        cand_vol = vol_results.get(candidate.symbol)
+        atr_pct = cand_vol.atr_price_ratio if cand_vol else None
+
         sizing = risk.size_position(
             symbol=candidate.symbol,
             sector=sector,
@@ -480,6 +509,8 @@ def run_quant_job(
             open_positions=snap.positions,
             sector_map=sector_map,
             buying_power=snap.buying_power,
+            atr_pct=atr_pct,
+            sentiment_bias=candidate.sentiment_bias,
         )
 
         if not sizing.approved:
