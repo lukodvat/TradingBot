@@ -23,7 +23,7 @@ The system runs three scheduled jobs on a server, all sharing a single SQLite da
 
 **Job A — LLM Sentiment Pipeline**
 
-Fetches financial headlines from Finnhub for 20 watchlist tickers and runs them through a three-tier triage. Runs three times daily — pre-market (overnight news), morning (full prior-day narrative), and midday (intraday update). SQLite de-duplication ensures headlines are never scored twice.
+Fetches financial headlines from Finnhub for 32 watchlist tickers and runs them through a three-tier triage. Runs three times daily — pre-market (overnight news), morning (full prior-day narrative), and midday (intraday update). SQLite de-duplication ensures headlines are never scored twice.
 
 - **Tier 1** — Free regex filter. Instantly drops SEC filings, routine dividends, index rebalances.
 - **Tier 2** — Claude Haiku scores each headline: `{sentiment: -1..+1, confidence: 0..1}`.
@@ -38,16 +38,19 @@ Runs six times per day. Makes zero LLM API calls — reads bias from SQLite for 
 For each run:
 1. **Fill reconciliation** — polls Alpaca for filled orders in the last 24h and populates the trades table with actual fill prices.
 2. **Circuit breaker** — if daily P&L is below −3%, liquidate everything, send an immediate alert email, and stop.
-3. **Trailing stop activation** — upgrade fixed stops to trailing stops on positions up ≥1.5%.
-4. **Time-based exits** — close positions held ≥7 calendar days with <1% unrealized gain.
-5. **Flatten check** — at 15:30 ET, close positions unless up >1% with matching bias. Always flatten on Fridays.
-6. **Macro blackout** — skip new entries on FOMC and CPI dates (config/macro_events.yaml).
-7. **Market regime filter** — evaluate SPY EMA(50/200) and realized vol. CAUTION suppresses longs; BEAR halts all entries; high vol caps positions at 2.
-8. **Earnings blackout** — skip tickers with earnings within 2 calendar days.
-9. Fetch OHLCV bars (80 days) and run the volatility filter (ATR/price ratio + realized vol).
-10. **Signal scan** — a ticker qualifies only if ALL are true: price above EMA(20), RSI(14) between 40–70, volume above 1.5× average, matching sentiment bias, outperforms SPY over 20 days (longs), and within 10% of the 63-day high (longs).
-11. Risk checks per candidate — position limit (regime-adjusted), sector cap (25%), buying power.
-12. Submit bracket orders: limit entry + 2% stop-loss + 3% take-profit leg.
+3. **Partial exits** — scale out 50% of a position when unrealized gain reaches +3%, locking in profit while keeping a runner.
+4. **Trailing stop activation** — upgrade fixed stops to trailing stops on positions up ≥1.5%.
+5. **Time-based exits** — close positions held ≥10 calendar days with <1% unrealized gain.
+6. **Flatten check** — at 15:30 ET, close positions unless up >1% with matching bias. Always flatten on Fridays. The 15:30 run is management-only — no new entries.
+7. **Macro blackout** — skip new entries on FOMC and CPI dates (config/macro_events.yaml).
+8. **Market regime filter** — evaluate SPY EMA(50/200) and realized vol. CAUTION suppresses longs; BEAR halts all entries; high vol caps positions at 2.
+9. **Earnings blackout** — skip tickers with earnings within 2 calendar days.
+10. Fetch OHLCV bars (260 days) and run the volatility filter (ATR/price ratio + realized vol).
+11. **Signal scan** — a ticker qualifies only if ALL are true: price above EMA(20), RSI(14) between 40–80, volume above 1.2× average (2.0× at 10:30 open), matching sentiment bias, outperforms SPY over 20 days (longs), and within 7% of the 63-day high (longs).
+12. Risk checks per candidate — position limit (regime-adjusted), sector cap (30%), portfolio heat cap (4% aggregate risk), buying power.
+13. **ATR-based sizing** — share count is set so dollar-risk per trade is uniform (0.5% of equity) regardless of ticker volatility. Position size scales down automatically for volatile tickers.
+14. **Sentiment-as-sizer** — when the bias matches the trade direction (BULLISH+long, BEARISH+short), position notional is scaled up by 1.25×.
+15. Submit bracket orders: limit entry + ATR-derived stop-loss + 6% take-profit leg.
 
 **Job C — Daily Email**
 
@@ -73,7 +76,7 @@ At 4:30 PM ET, sends an HTML email containing:
 | Dashboard | Streamlit |
 | Charts | Plotly |
 | Config | Pydantic Settings |
-| Tests | pytest — 347 tests |
+| Tests | pytest — 374 tests |
 | Language | Python 3.12 |
 
 ---
@@ -84,14 +87,17 @@ Every guardrail is hard-coded and tested. None are configurable at runtime.
 
 | Guardrail | Value |
 |---|---|
-| Stop-loss | 2% from entry (bracket order) |
-| Take-profit | +3% from entry (bracket order leg) |
+| ATR-based stop-loss | ATR × 1.5 from entry (floor: 1%) |
+| Take-profit | +6% from entry (bracket order leg) |
+| Partial exit | Scale out 50% at +3% unrealized gain |
 | Trailing stop activates at | +1.5% unrealized gain |
-| Trailing stop distance | 3% |
-| Time-based exit | ≥7 days held + <1% gain |
+| Trailing stop distance | 1% |
+| Time-based exit | ≥10 days held + <1% gain |
 | Max open positions | 5 (2 in high-vol regime) |
 | Max position size | 10% of equity |
-| Max sector concentration | 25% of equity |
+| Max sector concentration | 30% of equity |
+| Portfolio heat cap | 4% aggregate open dollar-risk |
+| Risk per trade | 0.5% of equity (ATR-scaled sizing) |
 | Daily circuit breaker | −3% equity → liquidate all + immediate alert email |
 | Overnight flatten | 15:30 ET (hold exception if up >1% + matching bias) |
 | Weekend flatten | Friday 15:30 ET, always, no exceptions |
@@ -217,7 +223,7 @@ pytest
 TradingBot/
 ├── config/
 │   ├── settings.py          # All configuration — paper-only guard enforced here
-│   ├── watchlist.yaml       # 20 tickers across 6 sectors
+│   ├── watchlist.yaml       # 32 tickers across 10 sectors
 │   └── macro_events.yaml    # FOMC + CPI blackout dates
 ├── core/
 │   ├── broker.py            # Alpaca wrapper — raises on live keys
@@ -240,11 +246,11 @@ TradingBot/
 │   ├── metrics.py           # Sharpe, drawdown, win rate, expectancy
 │   └── loader.py            # Historical bar loading (always fetches SPY for RS filter)
 ├── db/
-│   ├── schema.py            # 9 SQLite tables
+│   ├── schema.py            # 10 SQLite tables (incl. partial_exits)
 │   └── store.py             # Read/write helpers
 ├── notifications/
 │   └── email.py             # Daily HTML email + immediate circuit breaker alert
-├── tests/                   # 347 tests
+├── tests/                   # 374 tests
 ├── main.py                  # Entrypoint — APScheduler with Jobs A, B, C
 ├── run_backtest.py          # Standalone backtest CLI
 └── dashboard.py             # Streamlit dashboard
@@ -254,15 +260,19 @@ TradingBot/
 
 ## Watchlist
 
-20 stocks across 6 sectors. Edit `config/watchlist.yaml` to change.
+32 stocks across 10 sectors. Edit `config/watchlist.yaml` to change.
 
 | Sector | Tickers |
 |---|---|
 | Technology | AAPL, MSFT, GOOGL, AMZN, NVDA, META, AMD, CRM |
+| Semiconductors | AVGO, MU, TSM, QCOM |
 | Finance | JPM, BAC, GS |
+| Fintech | V, MA, PYPL |
 | Healthcare | JNJ, AMGN, UNH |
 | Energy | XOM, CVX |
-| Consumer | HD, WMT, TSLA |
+| Consumer | HD, WMT, TSLA, MCD |
+| Industrials | CAT, DE, BA |
+| Biotech | MRNA, REGN |
 
 ---
 
