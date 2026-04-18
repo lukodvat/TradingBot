@@ -49,12 +49,14 @@ def make_bars(
     daily_move_pct:      drives realized volatility
     high_low_spread_pct: drives ATR (high-low range relative to close)
     """
-    dates = pd.date_range(
-        end=datetime.now(timezone.utc).replace(hour=20, minute=0, second=0, microsecond=0),
-        periods=n,
-        freq="B",  # business days
-        tz="UTC",
-    )
+    # Anchor end to the most recent business day so `freq=B` returns exactly n bars
+    # (date_range with end on a weekend snaps and drops the final period).
+    end_anchor = pd.Timestamp(datetime.now(timezone.utc).replace(
+        hour=20, minute=0, second=0, microsecond=0
+    ))
+    if end_anchor.weekday() >= 5:  # Sat/Sun
+        end_anchor -= pd.tseries.offsets.BDay(1)
+    dates = pd.date_range(end=end_anchor, periods=n, freq="B", tz="UTC")
     np.random.seed(42)
     pct_changes = np.random.normal(0, daily_move_pct, n)
     closes = close_start * np.cumprod(1 + pct_changes)

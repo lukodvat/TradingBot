@@ -37,8 +37,10 @@ def make_spy_bars(
     for _ in range(n - 1):
         prices.append(prices[-1] * (1 + drift + rng.normal(0, vol)))
 
-    now = datetime.now(timezone.utc)
-    index = pd.date_range(end=now, periods=n, freq="B", tz="UTC")
+    end_anchor = pd.Timestamp(datetime.now(timezone.utc))
+    if end_anchor.weekday() >= 5:
+        end_anchor -= pd.tseries.offsets.BDay(1)
+    index = pd.date_range(end=end_anchor, periods=n, freq="B", tz="UTC")
 
     closes = np.array(prices)
     return pd.DataFrame({
