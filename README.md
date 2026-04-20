@@ -278,37 +278,78 @@ TradingBot/
 
 ## Deploying to a Server (Digital Ocean)
 
+### One-time server setup
+
 ```bash
 # 1. SSH into your droplet
-ssh root@your-server-ip
+ssh deploy@your-server-ip
 
 # 2. Clone and install
 git clone https://github.com/yourname/TradingBot.git
 cd TradingBot
-python3.12 -m venv .venv
-source .venv/bin/activate
+python3.12 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Add your .env file
+# 3. Add your .env file (never commit this)
 nano .env
 
-# 4. Run the backtest
+# 4. Run the backtest (required — main.py refuses to start without a passing report)
 python run_backtest.py
-
-# 5. Run the bot in a persistent session
-screen -S tradingbot
-python main.py
-# Ctrl+A, D to detach
-
-# 6. Run the dashboard in another session
-screen -S dashboard
-streamlit run dashboard.py --server.port 8501 --server.address 127.0.0.1
-# Ctrl+A, D to detach
-
-# 7. Access the dashboard from your laptop
-ssh -L 8501:localhost:8501 root@your-server-ip
-# Open http://localhost:8501
 ```
+
+### Process management (PM2)
+
+Both the bot and dashboard are managed by PM2 so they auto-restart on crash and survive reboots.
+
+```bash
+# Bot
+pm2 start main.py --name trading-bot --interpreter ~/TradingBot/venv/bin/python
+
+# Dashboard (via wrapper script so cwd + venv are correct)
+cat > ~/TradingBot/start-dashboard.sh <<'EOF'
+#!/bin/bash
+cd ~/TradingBot
+source venv/bin/activate
+exec streamlit run dashboard.py --server.port 8501 --server.headless true
+EOF
+chmod +x ~/TradingBot/start-dashboard.sh
+pm2 start ~/TradingBot/start-dashboard.sh --name trading-dashboard
+
+# Persist across reboots
+pm2 save
+pm2 startup   # run the command it prints
+```
+
+### Public dashboard access (Nginx reverse proxy)
+
+The default Streamlit port (8501) is bound behind Nginx on port 80 so the dashboard is reachable at `http://your-server-ip/` without a domain or SSH tunnel.
+
+`/etc/nginx/sites-enabled/default`:
+
+```nginx
+server {
+    listen 80 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass http://localhost:8501/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+Reload: `sudo nginx -t && sudo systemctl reload nginx`.
+
+DigitalOcean Cloud Firewall must allow inbound **port 80** (and 22 for SSH).
+
+### CI/CD
+
+`.github/workflows/deploy.yml` auto-deploys on push to `main` — pulls, reinstalls deps, restarts the bot via PM2. Required GitHub secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_KEY` (ed25519 private key matching `~/.ssh/authorized_keys` on the server).
 
 ---
 
