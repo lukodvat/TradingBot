@@ -468,7 +468,7 @@ st.subheader("Session Log")
 
 session_df = query(
     """
-    SELECT session, run_timestamp, tickers_evaluated, tier1_calls, tier2_calls,
+    SELECT session, run_timestamp, tickers_evaluated, tier1_passes AS tier1_calls, tier2_calls,
            tier3_calls, orders_submitted, circuit_breaker_triggered
     FROM session_log
     ORDER BY run_timestamp DESC
