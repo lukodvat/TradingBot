@@ -15,8 +15,12 @@
             username: ${{ secrets.DEPLOY_USER }}                                                      
             key: ${{ secrets.DEPLOY_KEY }}
             script: |
+              export NVM_DIR="$HOME/.nvm"
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+              export PATH="$HOME/.nvm/versions/node/$(node --version 2>/dev/null | tr -d v)/bin:/usr/local/bin:$PATH"
+
               cd ~/TradingBot
-              git pull origin main                                                                    
+              git pull origin main
               source venv/bin/activate
-              pip install -r requirements.txt                                                         
+              pip install -r requirements.txt
               pm2 restart trading-bot
