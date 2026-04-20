@@ -1,0 +1,22 @@
+  name: Deploy to Production
+                                                                                                      
+  on:             
+    push:
+      branches: [main]
+
+  jobs:
+    deploy:
+      runs-on: ubuntu-latest
+      steps:
+        - name: Deploy to droplet
+          uses: appleboy/ssh-action@v1.0.3
+          with:                                                                                       
+            host: ${{ secrets.DEPLOY_HOST }}
+            username: ${{ secrets.DEPLOY_USER }}                                                      
+            key: ${{ secrets.DEPLOY_KEY }}
+            script: |
+              cd ~/TradingBot
+              git pull origin main                                                                    
+              source venv/bin/activate
+              pip install -r requirements.txt                                                         
+              pm2 restart trading-bot

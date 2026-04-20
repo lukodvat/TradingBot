@@ -31,6 +31,7 @@ from typing import Optional
 
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.enums import DataFeed
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
 
@@ -200,6 +201,7 @@ class MarketDataClient:
                 start=start,
                 end=end,
                 adjustment="split",  # adjust for stock splits
+                feed=DataFeed.IEX,   # free tier doesn't permit SIP data
             )
             raw = self._client.get_stock_bars(req)
         except Exception as exc:
