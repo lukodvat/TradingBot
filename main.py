@@ -212,7 +212,7 @@ def run_llm_job(
     settings: Settings,
     llm_client: LLMClient,
     news_provider: FinnhubProvider,
-    conn,
+    db_path: str,
 ) -> None:
     """
     Job A: fetch headlines → tiered triage → write sentiment_bias to SQLite.
@@ -223,74 +223,78 @@ def run_llm_job(
     session = f"llm_{llm_run}"
 
     log.info("=== Job A START [%s] ===", llm_run)
-    store.start_session_log(conn, run_timestamp=run_timestamp, session=session)
-
-    # Calendar gate
-    if not _is_market_day(run_dt):
-        log.info("Job A skipped — not a market day")
-        return
-
-    # LLM budget check
+    conn = store.get_connection(db_path)
     try:
-        assert_budget_ok(conn, settings)
-    except RuntimeError as exc:
-        log.critical("Job A aborted — %s", exc)
-        return
+        store.start_session_log(conn, run_timestamp=run_timestamp, session=session)
 
-    # News fetch
-    lookback_map = {
-        "premarket": settings.news_lookback_premarket_hours,  # 9:00 ET — overnight news
-        "morning":   settings.news_lookback_morning_hours,    # 10:00 ET — full prior-day narrative
-        "midday":    settings.news_lookback_afternoon_hours,  # 13:00 ET — intraday update
-    }
-    lookback = lookback_map.get(llm_run, settings.news_lookback_morning_hours)
-    symbols = load_watchlist(settings.watchlist_path)
-    raw_headlines = fetch_all_headlines(
-        news_provider, symbols, lookback_hours=lookback
-    )
+        # Calendar gate
+        if not _is_market_day(run_dt):
+            log.info("Job A skipped — not a market day")
+            return
 
-    # De-duplicate and persist
-    new_headlines = []
-    for h in raw_headlines:
-        if store.is_headline_seen(conn, h.id):
-            continue
-        store.insert_headline(
-            conn,
-            headline_id=h.id,
-            symbol=h.symbol,
-            headline=h.headline,
-            source=h.source,
-            published_at=h.published_at.isoformat() if h.published_at else None,
-            fetched_at=run_timestamp,
-            run_timestamp=run_timestamp,
-        )
-        new_headlines.append(h)
+        # LLM budget check
+        try:
+            assert_budget_ok(conn, settings)
+        except RuntimeError as exc:
+            log.critical("Job A aborted — %s", exc)
+            return
 
-    log.info("Headlines: %d raw, %d new", len(raw_headlines), len(new_headlines))
-    store.update_session_log(conn, run_timestamp=run_timestamp,
-                             tickers_evaluated=len(symbols))
-
-    if not new_headlines:
-        log.info("Job A done — no new headlines")
-        return
-
-    # Tiered triage
-    analyzer = SentimentAnalyzer(settings, llm_client, conn)
-    biases = analyzer.analyze(new_headlines, run_timestamp=run_timestamp, llm_run=llm_run)
-
-    # Write sentiment_bias table
-    for symbol, bias_obj in biases.items():
-        store.upsert_sentiment_bias(
-            conn,
-            ticker=symbol,
-            date=run_dt.astimezone(_ET).strftime("%Y-%m-%d"),
-            bias=bias_obj.bias,
-            aggregated_score=bias_obj.aggregated_score,
-            headline_count=bias_obj.headline_count,
-            llm_run=llm_run,
+        # News fetch
+        lookback_map = {
+            "premarket": settings.news_lookback_premarket_hours,  # 9:00 ET — overnight news
+            "morning":   settings.news_lookback_morning_hours,    # 10:00 ET — full prior-day narrative
+            "midday":    settings.news_lookback_afternoon_hours,  # 13:00 ET — intraday update
+        }
+        lookback = lookback_map.get(llm_run, settings.news_lookback_morning_hours)
+        symbols = load_watchlist(settings.watchlist_path)
+        raw_headlines = fetch_all_headlines(
+            news_provider, symbols, lookback_hours=lookback
         )
 
-    log.info("Job A DONE [%s] — biases written for %d tickers", llm_run, len(biases))
+        # De-duplicate and persist
+        new_headlines = []
+        for h in raw_headlines:
+            if store.is_headline_seen(conn, h.id):
+                continue
+            store.insert_headline(
+                conn,
+                headline_id=h.id,
+                symbol=h.symbol,
+                headline=h.headline,
+                source=h.source,
+                published_at=h.published_at.isoformat() if h.published_at else None,
+                fetched_at=run_timestamp,
+                run_timestamp=run_timestamp,
+            )
+            new_headlines.append(h)
+
+        log.info("Headlines: %d raw, %d new", len(raw_headlines), len(new_headlines))
+        store.update_session_log(conn, run_timestamp=run_timestamp,
+                                 tickers_evaluated=len(symbols))
+
+        if not new_headlines:
+            log.info("Job A done — no new headlines")
+            return
+
+        # Tiered triage
+        analyzer = SentimentAnalyzer(settings, llm_client, conn)
+        biases = analyzer.analyze(new_headlines, run_timestamp=run_timestamp, llm_run=llm_run)
+
+        # Write sentiment_bias table
+        for symbol, bias_obj in biases.items():
+            store.upsert_sentiment_bias(
+                conn,
+                ticker=symbol,
+                date=run_dt.astimezone(_ET).strftime("%Y-%m-%d"),
+                bias=bias_obj.bias,
+                aggregated_score=bias_obj.aggregated_score,
+                headline_count=bias_obj.headline_count,
+                llm_run=llm_run,
+            )
+
+        log.info("Job A DONE [%s] — biases written for %d tickers", llm_run, len(biases))
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +308,7 @@ def run_quant_job(
     risk: RiskManager,
     market_data: MarketDataClient,
     news_provider,
-    conn,
+    db_path: str,
 ) -> None:
     """
     Job B: read bias → vol filter → signal scan → risk checks → bracket orders.
@@ -316,261 +320,265 @@ def run_quant_job(
     is_fr = _is_friday(run_dt)
 
     log.info("=== Job B START [%s] ===", session)
-    store.start_session_log(conn, run_timestamp=run_timestamp, session=session)
+    conn = store.get_connection(db_path)
+    try:
+        store.start_session_log(conn, run_timestamp=run_timestamp, session=session)
 
-    # Calendar + time gate
-    if not _is_market_day(run_dt):
-        log.info("Job B skipped — not a market day")
-        return
-    if not _is_within_trading_hours(run_dt, settings):
-        log.info("Job B skipped — outside trading hours")
-        return
+        # Calendar + time gate
+        if not _is_market_day(run_dt):
+            log.info("Job B skipped — not a market day")
+            return
+        if not _is_within_trading_hours(run_dt, settings):
+            log.info("Job B skipped — outside trading hours")
+            return
 
-    # Fill reconciliation — populate trades table from Alpaca filled orders
-    reconcile_fills(broker, conn, run_timestamp)
+        # Fill reconciliation — populate trades table from Alpaca filled orders
+        reconcile_fills(broker, conn, run_timestamp)
 
-    # Account snapshot
-    snap = broker.snapshot()
-
-    # Capture today's open equity on the first run of the day so the circuit
-    # breaker reacts to intraday losses the system causes, not overnight gaps.
-    open_equity = store.get_open_equity_for_date(conn, today_str)
-    if open_equity is None:
-        open_equity = snap.equity
-        store.upsert_daily_pnl(conn, date=today_str, open_equity=open_equity)
-
-    # Circuit breaker — intraday drawdown from today's open, not last close.
-    intraday_pnl = snap.equity - open_equity
-    cb = risk.check_circuit_breaker(intraday_pnl, open_equity)
-    if cb.triggered:
-        log.critical(
-            "CIRCUIT BREAKER — daily_pnl=%.2f%% — liquidating all",
-            cb.daily_pnl_pct * 100,
-        )
-        broker.close_all_positions()
-        store.update_session_log(conn, run_timestamp=run_timestamp,
-                                 circuit_breaker_triggered=1)
-        send_circuit_breaker_alert(settings, cb.daily_pnl_pct, snap.equity)
-        return
-
-    # Position management — trailing stops, time-based exits, and flattens
-    pm = PortfolioManager(settings, broker, risk, conn)
-    positions = snap.positions
-
-    # Partial exits run BEFORE trailing-stop replacement so the trailing stop
-    # is sized against the residual qty, not the original.
-    if pm.manage_partial_exits(positions, run_timestamp) > 0:
-        positions = broker.snapshot().positions
-
-    pm.manage_trailing_stops(positions, run_timestamp)
-    pm.manage_time_based_exits(positions, run_timestamp)
-
-    # Load today's biases for flatten decisions
-    biases = store.get_all_sentiment_biases_for_date(conn, today_str)
-    if not biases:
-        log.warning(
-            "Job B [%s]: no sentiment biases found for %s — "
-            "Job A may not have run yet. All tickers will be treated as NEUTRAL.",
-            session, today_str,
-        )
-    minutes_to_close = _minutes_to_market_close(run_dt)
-    is_flatten_window = minutes_to_close <= settings.flatten_before_close_minutes
-
-    if is_flatten_window:
-        pm.manage_flattens(
-            positions, biases=biases,
-            run_dt=run_dt, run_timestamp=run_timestamp,
-            is_friday=is_fr,
-        )
-
-    # Same-ticker cooldown
-    held_today = pm.get_held_today(today_str)
-
-    # Fetch OHLCV for all watchlist tickers + SPY (260 days for EMA(200) regime + 63-bar near-high)
-    symbols = load_watchlist(settings.watchlist_path)
-    sector_map = load_sector_map(settings.watchlist_path)
-    all_symbols = list(set(symbols + ["SPY"]))
-    all_bars = market_data.get_daily_bars(all_symbols, lookback_days=260)
-
-    spy_bars = all_bars.pop("SPY", None)
-    bars = {sym: all_bars[sym] for sym in symbols if sym in all_bars}
-
-    # Macro event blackout — block new entries but let position management continue
-    if _is_macro_blackout(today_str, settings.macro_events_path):
-        log.info("Job B: macro blackout day (%s) — skipping signal scan", today_str)
+        # Account snapshot
         snap = broker.snapshot()
-        pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
-        store.update_session_log(conn, run_timestamp=run_timestamp,
-                                 tickers_evaluated=0, orders_submitted=0)
-        return
 
-    # Market regime filter
-    regime = MarketRegimeFilter(settings).evaluate(spy_bars)
-    spy_return_20d = _compute_spy_return_20d(spy_bars)
+        # Capture today's open equity on the first run of the day so the circuit
+        # breaker reacts to intraday losses the system causes, not overnight gaps.
+        open_equity = store.get_open_equity_for_date(conn, today_str)
+        if open_equity is None:
+            open_equity = snap.equity
+            store.upsert_daily_pnl(conn, date=today_str, open_equity=open_equity)
 
-    if not regime.allow_any_entries:
-        log.info("Job B: regime=%s — no new entries this run", regime.label)
-        snap = broker.snapshot()
-        pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
-        store.update_session_log(conn, run_timestamp=run_timestamp,
-                                 tickers_evaluated=0, orders_submitted=0)
-        return
-
-    # Earnings blackout — filter out tickers with upcoming earnings
-    earnings_blackout = news_provider.get_upcoming_earnings(
-        symbols, days_ahead=settings.earnings_blackout_days
-    )
-    if earnings_blackout:
-        symbols = [s for s in symbols if s not in earnings_blackout]
-        bars = {s: v for s, v in bars.items() if s not in earnings_blackout}
-
-    # Volatility filter
-    vol_results = filter_watchlist(bars, settings)
-    for sym, vr in vol_results.items():
-        store.record_vol_filter(
-            conn,
-            run_timestamp=run_timestamp,
-            symbol=sym,
-            atr_price_ratio=vr.atr_price_ratio,
-            realized_vol=vr.realized_vol,
-            atr_threshold=settings.vol_atr_threshold,
-            vol_threshold=settings.vol_realized_threshold,
-            passed=vr.passed,
-            fail_reason=vr.fail_reason,
-        )
-
-    passing = passing_tickers(vol_results)
-    passing_bars = {sym: bars[sym] for sym in passing if sym in bars}
-    log.info("Vol filter: %d/%d tickers pass", len(passing), len(symbols))
-
-    # Time-of-day gate: 15:30 ET final scan manages positions only (no new entries).
-    et_now = run_dt.astimezone(_ET)
-    if et_now.hour == settings.run_hour_afternoon and et_now.minute >= settings.no_new_entries_session_minute_marker:
-        log.info("Job B [%s]: 15:30 final scan — managing positions only, no new entries", session)
-        snap = broker.snapshot()
-        pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
-        store.update_session_log(conn, run_timestamp=run_timestamp,
-                                 tickers_evaluated=0, orders_submitted=0)
-        return
-
-    # Time-of-day volume threshold: stricter at 10:30 open, default elsewhere.
-    if et_now.hour == settings.run_hour_morning and et_now.minute == settings.open_session_minute_marker:
-        volume_override = settings.volume_multiplier_open
-    else:
-        volume_override = None
-
-    # Signal scan (with relative strength and near-high filters active)
-    scanner = SignalScanner(settings, conn, spy_return_20d=spy_return_20d)
-    candidates = scanner.scan(
-        passing_bars, date=today_str, held_today=held_today,
-        volume_multiplier_override=volume_override,
-    )
-
-    # Apply regime direction filter
-    if not regime.allow_long_entries:
-        candidates = [c for c in candidates if c.direction != "LONG"]
-        log.info("Regime %s: long entries suppressed", regime.label)
-    if not regime.allow_short_entries:
-        candidates = [c for c in candidates if c.direction != "SHORT"]
-
-    log.info("Signals: %d candidates (regime=%s)", len(candidates), regime.label)
-
-    # Refresh snapshot after position management ops
-    snap = broker.snapshot()
-
-    # Regime-adjusted position cap
-    effective_max_positions = regime.max_positions_override
-
-    # Risk pre-checks + order execution
-    orders_submitted = 0
-    for candidate in candidates:
-        # Respect regime position cap before calling risk manager
-        if len(snap.positions) >= effective_max_positions:
-            log.info(
-                "Regime cap: %d positions at regime limit %d — stopping",
-                len(snap.positions), effective_max_positions,
+        # Circuit breaker — intraday drawdown from today's open, not last close.
+        intraday_pnl = snap.equity - open_equity
+        cb = risk.check_circuit_breaker(intraday_pnl, open_equity)
+        if cb.triggered:
+            log.critical(
+                "CIRCUIT BREAKER — daily_pnl=%.2f%% — liquidating all",
+                cb.daily_pnl_pct * 100,
             )
-            break
+            broker.close_all_positions()
+            store.update_session_log(conn, run_timestamp=run_timestamp,
+                                     circuit_breaker_triggered=1)
+            send_circuit_breaker_alert(settings, cb.daily_pnl_pct, snap.equity)
+            return
 
-        sector = sector_map.get(candidate.symbol, "Unknown")
-        side = OrderSide.BUY if candidate.direction == "LONG" else OrderSide.SELL
+        # Position management — trailing stops, time-based exits, and flattens
+        pm = PortfolioManager(settings, broker, risk, conn)
+        positions = snap.positions
 
-        # ATR-based sizing: stop distance scales with each ticker's volatility,
-        # share count is set so dollar-risk per trade is uniform across the book.
-        cand_vol = vol_results.get(candidate.symbol)
-        atr_pct = cand_vol.atr_price_ratio if cand_vol else None
+        # Partial exits run BEFORE trailing-stop replacement so the trailing stop
+        # is sized against the residual qty, not the original.
+        if pm.manage_partial_exits(positions, run_timestamp) > 0:
+            positions = broker.snapshot().positions
 
-        sizing = risk.size_position(
-            symbol=candidate.symbol,
-            sector=sector,
-            side=side,
-            limit_price=candidate.current_price,
-            equity=snap.equity,
-            open_positions=snap.positions,
-            sector_map=sector_map,
-            buying_power=snap.buying_power,
-            atr_pct=atr_pct,
-            sentiment_bias=candidate.sentiment_bias,
-        )
+        pm.manage_trailing_stops(positions, run_timestamp)
+        pm.manage_time_based_exits(positions, run_timestamp)
 
-        if not sizing.approved:
-            log.info("REJECT %s: %s", candidate.symbol, sizing.rejection_reason)
-            continue
-
-        try:
-            order = broker.submit_bracket_order(
-                symbol=candidate.symbol,
-                qty=sizing.qty,
-                side=side,
-                limit_price=sizing.limit_price,
-                stop_price=sizing.stop_price,
-                take_profit_price=sizing.take_profit_price,
+        # Load today's biases for flatten decisions
+        biases = store.get_all_sentiment_biases_for_date(conn, today_str)
+        if not biases:
+            log.warning(
+                "Job B [%s]: no sentiment biases found for %s — "
+                "Job A may not have run yet. All tickers will be treated as NEUTRAL.",
+                session, today_str,
             )
-            store.record_order(
-                conn,
-                order_id=str(order.id),
-                symbol=candidate.symbol,
-                side=side.value,
-                order_type="bracket",
-                qty=sizing.qty,
-                limit_price=sizing.limit_price,
-                stop_price=sizing.stop_price,
-                status=str(order.status),
-                submitted_at=run_timestamp,
-                run_timestamp=run_timestamp,
-            )
-            log.info(
-                "ORDER %s %s qty=%d @ %.2f stop=%.2f tp=%.2f",
-                candidate.direction, candidate.symbol,
-                sizing.qty, sizing.limit_price, sizing.stop_price,
-                sizing.take_profit_price or 0,
-            )
-            orders_submitted += 1
+        minutes_to_close = _minutes_to_market_close(run_dt)
+        is_flatten_window = minutes_to_close <= settings.flatten_before_close_minutes
 
-            # Update snapshot so next candidate sees current positions
+        if is_flatten_window:
+            pm.manage_flattens(
+                positions, biases=biases,
+                run_dt=run_dt, run_timestamp=run_timestamp,
+                is_friday=is_fr,
+            )
+
+        # Same-ticker cooldown
+        held_today = pm.get_held_today(today_str)
+
+        # Fetch OHLCV for all watchlist tickers + SPY (260 days for EMA(200) regime + 63-bar near-high)
+        symbols = load_watchlist(settings.watchlist_path)
+        sector_map = load_sector_map(settings.watchlist_path)
+        all_symbols = list(set(symbols + ["SPY"]))
+        all_bars = market_data.get_daily_bars(all_symbols, lookback_days=260)
+
+        spy_bars = all_bars.pop("SPY", None)
+        bars = {sym: all_bars[sym] for sym in symbols if sym in all_bars}
+
+        # Macro event blackout — block new entries but let position management continue
+        if _is_macro_blackout(today_str, settings.macro_events_path):
+            log.info("Job B: macro blackout day (%s) — skipping signal scan", today_str)
             snap = broker.snapshot()
-        except Exception as exc:
-            log.error("Order failed for %s: %s", candidate.symbol, exc)
+            pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
+            store.update_session_log(conn, run_timestamp=run_timestamp,
+                                     tickers_evaluated=0, orders_submitted=0)
+            return
 
-    # Record equity snapshot
-    pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
-    store.update_session_log(
-        conn, run_timestamp=run_timestamp,
-        tickers_evaluated=len(passing),
-        orders_submitted=orders_submitted,
-    )
+        # Market regime filter
+        regime = MarketRegimeFilter(settings).evaluate(spy_bars)
+        spy_return_20d = _compute_spy_return_20d(spy_bars)
 
-    log.info(
-        "Job B DONE [%s] — candidates=%d orders=%d equity=%.2f",
-        session, len(candidates), orders_submitted, snap.equity,
-    )
+        if not regime.allow_any_entries:
+            log.info("Job B: regime=%s — no new entries this run", regime.label)
+            snap = broker.snapshot()
+            pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
+            store.update_session_log(conn, run_timestamp=run_timestamp,
+                                     tickers_evaluated=0, orders_submitted=0)
+            return
+
+        # Earnings blackout — filter out tickers with upcoming earnings
+        earnings_blackout = news_provider.get_upcoming_earnings(
+            symbols, days_ahead=settings.earnings_blackout_days
+        )
+        if earnings_blackout:
+            symbols = [s for s in symbols if s not in earnings_blackout]
+            bars = {s: v for s, v in bars.items() if s not in earnings_blackout}
+
+        # Volatility filter
+        vol_results = filter_watchlist(bars, settings)
+        for sym, vr in vol_results.items():
+            store.record_vol_filter(
+                conn,
+                run_timestamp=run_timestamp,
+                symbol=sym,
+                atr_price_ratio=vr.atr_price_ratio,
+                realized_vol=vr.realized_vol,
+                atr_threshold=settings.vol_atr_threshold,
+                vol_threshold=settings.vol_realized_threshold,
+                passed=vr.passed,
+                fail_reason=vr.fail_reason,
+            )
+
+        passing = passing_tickers(vol_results)
+        passing_bars = {sym: bars[sym] for sym in passing if sym in bars}
+        log.info("Vol filter: %d/%d tickers pass", len(passing), len(symbols))
+
+        # Time-of-day gate: 15:30 ET final scan manages positions only (no new entries).
+        et_now = run_dt.astimezone(_ET)
+        if et_now.hour == settings.run_hour_afternoon and et_now.minute >= settings.no_new_entries_session_minute_marker:
+            log.info("Job B [%s]: 15:30 final scan — managing positions only, no new entries", session)
+            snap = broker.snapshot()
+            pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
+            store.update_session_log(conn, run_timestamp=run_timestamp,
+                                     tickers_evaluated=0, orders_submitted=0)
+            return
+
+        # Time-of-day volume threshold: stricter at 10:30 open, default elsewhere.
+        if et_now.hour == settings.run_hour_morning and et_now.minute == settings.open_session_minute_marker:
+            volume_override = settings.volume_multiplier_open
+        else:
+            volume_override = None
+
+        # Signal scan (with relative strength and near-high filters active)
+        scanner = SignalScanner(settings, conn, spy_return_20d=spy_return_20d)
+        candidates = scanner.scan(
+            passing_bars, date=today_str, held_today=held_today,
+            volume_multiplier_override=volume_override,
+        )
+
+        # Apply regime direction filter
+        if not regime.allow_long_entries:
+            candidates = [c for c in candidates if c.direction != "LONG"]
+            log.info("Regime %s: long entries suppressed", regime.label)
+        if not regime.allow_short_entries:
+            candidates = [c for c in candidates if c.direction != "SHORT"]
+
+        log.info("Signals: %d candidates (regime=%s)", len(candidates), regime.label)
+
+        # Refresh snapshot after position management ops
+        snap = broker.snapshot()
+
+        # Regime-adjusted position cap
+        effective_max_positions = regime.max_positions_override
+
+        # Risk pre-checks + order execution
+        orders_submitted = 0
+        for candidate in candidates:
+            # Respect regime position cap before calling risk manager
+            if len(snap.positions) >= effective_max_positions:
+                log.info(
+                    "Regime cap: %d positions at regime limit %d — stopping",
+                    len(snap.positions), effective_max_positions,
+                )
+                break
+
+            sector = sector_map.get(candidate.symbol, "Unknown")
+            side = OrderSide.BUY if candidate.direction == "LONG" else OrderSide.SELL
+
+            # ATR-based sizing: stop distance scales with each ticker's volatility,
+            # share count is set so dollar-risk per trade is uniform across the book.
+            cand_vol = vol_results.get(candidate.symbol)
+            atr_pct = cand_vol.atr_price_ratio if cand_vol else None
+
+            sizing = risk.size_position(
+                symbol=candidate.symbol,
+                sector=sector,
+                side=side,
+                limit_price=candidate.current_price,
+                equity=snap.equity,
+                open_positions=snap.positions,
+                sector_map=sector_map,
+                buying_power=snap.buying_power,
+                atr_pct=atr_pct,
+                sentiment_bias=candidate.sentiment_bias,
+            )
+
+            if not sizing.approved:
+                log.info("REJECT %s: %s", candidate.symbol, sizing.rejection_reason)
+                continue
+
+            try:
+                order = broker.submit_bracket_order(
+                    symbol=candidate.symbol,
+                    qty=sizing.qty,
+                    side=side,
+                    limit_price=sizing.limit_price,
+                    stop_price=sizing.stop_price,
+                    take_profit_price=sizing.take_profit_price,
+                )
+                store.record_order(
+                    conn,
+                    order_id=str(order.id),
+                    symbol=candidate.symbol,
+                    side=side.value,
+                    order_type="bracket",
+                    qty=sizing.qty,
+                    limit_price=sizing.limit_price,
+                    stop_price=sizing.stop_price,
+                    status=str(order.status),
+                    submitted_at=run_timestamp,
+                    run_timestamp=run_timestamp,
+                )
+                log.info(
+                    "ORDER %s %s qty=%d @ %.2f stop=%.2f tp=%.2f",
+                    candidate.direction, candidate.symbol,
+                    sizing.qty, sizing.limit_price, sizing.stop_price,
+                    sizing.take_profit_price or 0,
+                )
+                orders_submitted += 1
+
+                # Update snapshot so next candidate sees current positions
+                snap = broker.snapshot()
+            except Exception as exc:
+                log.error("Order failed for %s: %s", candidate.symbol, exc)
+
+        # Record equity snapshot
+        pm.record_snapshot(snap, run_timestamp=run_timestamp, session=session, date=today_str)
+        store.update_session_log(
+            conn, run_timestamp=run_timestamp,
+            tickers_evaluated=len(passing),
+            orders_submitted=orders_submitted,
+        )
+
+        log.info(
+            "Job B DONE [%s] — candidates=%d orders=%d equity=%.2f",
+            session, len(candidates), orders_submitted, snap.equity,
+        )
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
 # Job C — Daily Email
 # ---------------------------------------------------------------------------
 
-def run_email_job(settings: Settings, conn) -> None:
+def run_email_job(settings: Settings, db_path: str) -> None:
     """
     Job C: generate and send the daily summary email at 16:30 ET.
     Skips weekends and when email is disabled in settings.
@@ -583,7 +591,9 @@ def run_email_job(settings: Settings, conn) -> None:
     date_str = run_dt.astimezone(_ET).strftime("%Y-%m-%d")
     log.info("=== Job C START — daily email for %s ===", date_str)
 
+    conn = store.get_connection(db_path)
     ok = send_daily_email(conn, settings, date=date_str)
+    conn.close()
     if ok:
         log.info("Job C DONE — email sent")
     else:
@@ -620,8 +630,9 @@ def main() -> None:
     log.info("Backtest gate passed: %s", gate_path)
 
     # --- DB init ---
-    conn = store.get_connection(settings.db_path)
-    schema.init_db(conn)
+    _init_conn = store.get_connection(settings.db_path)
+    schema.init_db(_init_conn)
+    _init_conn.close()
     log.info("Database ready at %s", settings.db_path)
 
     # --- Shared clients (created once, reused across runs) ---
@@ -640,7 +651,7 @@ def main() -> None:
     scheduler.add_job(
         run_llm_job,
         CronTrigger(hour=9, minute=0, timezone=str(_ET)),
-        args=["premarket", settings, llm_client, news_provider, conn],
+        args=["premarket", settings, llm_client, news_provider, settings.db_path],
         id="llm_premarket",
         name="LLM Sentiment — Pre-Market",
         misfire_grace_time=300,
@@ -648,7 +659,7 @@ def main() -> None:
     scheduler.add_job(
         run_llm_job,
         CronTrigger(hour=10, minute=0, timezone=str(_ET)),
-        args=["morning", settings, llm_client, news_provider, conn],
+        args=["morning", settings, llm_client, news_provider, settings.db_path],
         id="llm_morning",
         name="LLM Sentiment — Morning",
         misfire_grace_time=300,
@@ -656,14 +667,14 @@ def main() -> None:
     scheduler.add_job(
         run_llm_job,
         CronTrigger(hour=13, minute=0, timezone=str(_ET)),
-        args=["midday", settings, llm_client, news_provider, conn],
+        args=["midday", settings, llm_client, news_provider, settings.db_path],
         id="llm_midday",
         name="LLM Sentiment — Midday",
         misfire_grace_time=300,
     )
 
     # Job B — Quant scanner (6 windows)
-    quant_args = [settings, broker, risk, market_data, news_provider, conn]
+    quant_args = [settings, broker, risk, market_data, news_provider, settings.db_path]
     for hour, minute, session_label in [
         (10, 30, "quant_1030"),
         (11, 30, "quant_1130"),
@@ -685,7 +696,7 @@ def main() -> None:
     scheduler.add_job(
         run_email_job,
         CronTrigger(hour=16, minute=30, timezone=str(_ET)),
-        args=[settings, conn],
+        args=[settings, settings.db_path],
         id="email_daily",
         name="Daily Summary Email",
         misfire_grace_time=600,
