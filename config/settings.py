@@ -253,8 +253,8 @@ class Settings(BaseSettings):
         description="Rolling window (bars) for the near-high proximity filter",
     )
     near_high_max_drawdown: float = Field(
-        default=0.07,
-        description="Max allowed distance below the rolling high (7% = within 7% of high)",
+        default=0.10,
+        description="Max allowed distance below the rolling high (10% = within 10% of high)",
     )
 
     # -------------------------------------------------------------------------

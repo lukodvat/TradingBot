@@ -19,11 +19,11 @@ Each trading day follows a fixed schedule:
 A ticker only qualifies for entry when **all** of the following are true:
 
 1. Price above EMA(20) — uptrend confirmed
-2. RSI(14) between 40–80 — momentum without being overbought
+2. RSI(14) between 50–80 — momentum without being overbought
 3. Volume ≥ 1.2× 20-day average (2.0× at the 10:30 opening scan)
 4. Sentiment bias is not contradicting the direction (BEARISH blocks longs; BULLISH blocks shorts; NEUTRAL passes)
 5. Ticker's 20-day return exceeds SPY's (relative strength — longs only)
-6. Price within 7% of its 63-day high (near-high filter — longs only)
+6. Price within 10% of its 63-day high (near-high filter — longs only)
 
 ## Risk Management
 
@@ -60,7 +60,7 @@ Python 3.12 · Alpaca paper API · Anthropic Haiku + Sonnet · Finnhub news · p
 |---|---|
 | Account size | ~$10,000 (paper) |
 | Watchlist | 32 tickers, 10 sectors |
-| LLM budget | Hard-stop at $18/month (~$2–4 typical) |
+| LLM budget | Hard-stop at $10/month (~$2–4 typical) |
 | Risk per trade | $50 (0.5% of equity) |
 | Max daily loss | $300 (3% circuit breaker) |
 | Scheduled runs/day | 10 (3 LLM + 6 quant + 1 email) |

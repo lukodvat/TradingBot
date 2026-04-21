@@ -6,7 +6,7 @@ Structure:
   2. Performance table: today / week / month / 6M / YTD / 1Y.
   3. Today's trades with P&L per trade.
   4. Open positions.
-  5. LLM spend tracker (month-to-date vs $18 cap).
+  5. LLM spend tracker (month-to-date vs $10 cap).
 
 Delivery: Gmail SMTP with app password.
 Set EMAIL_ENABLED=true, EMAIL_RECIPIENT, EMAIL_SENDER, EMAIL_APP_PASSWORD in .env.

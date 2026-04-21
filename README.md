@@ -46,7 +46,7 @@ For each run:
 8. **Market regime filter** — evaluate SPY EMA(50/200) and realized vol. CAUTION suppresses longs; BEAR halts all entries; high vol caps positions at 2.
 9. **Earnings blackout** — skip tickers with earnings within 2 calendar days.
 10. Fetch OHLCV bars (260 days) and run the volatility filter (ATR/price ratio + realized vol).
-11. **Signal scan** — a ticker qualifies only if ALL are true: price above EMA(20), RSI(14) between 40–80, volume above 1.2× average (2.0× at 10:30 open), matching sentiment bias, outperforms SPY over 20 days (longs), and within 7% of the 63-day high (longs).
+11. **Signal scan** — a ticker qualifies only if ALL are true: price above EMA(20), RSI(14) between 50–80, volume above 1.2× average (2.0× at 10:30 open), matching sentiment bias, outperforms SPY over 20 days (longs), and within 10% of the 63-day high (longs).
 12. Risk checks per candidate — position limit (regime-adjusted), sector cap (30%), portfolio heat cap (4% aggregate risk), buying power.
 13. **ATR-based sizing** — share count is set so dollar-risk per trade is uniform (0.5% of equity) regardless of ticker volatility. Position size scales down automatically for volatile tickers.
 14. **Sentiment-as-sizer** — when the bias matches the trade direction (BULLISH+long, BEARISH+short), position notional is scaled up by 1.25×.
@@ -107,7 +107,7 @@ Every guardrail is hard-coded and tested. None are configurable at runtime.
 | Relative strength | Ticker 20d return must exceed SPY (longs only) |
 | Near-high filter | Price within 10% of 63-day high (longs only) |
 | NYSE holiday calendar | 2025–2026 holiday dates built in |
-| LLM monthly hard-stop | $18 USD |
+| LLM monthly hard-stop | $10 USD |
 | Live key guard | Process exits immediately if a non-paper Alpaca URL is detected |
 | Backtest gate | `main.py` refuses to start without a passing backtest report |
 
