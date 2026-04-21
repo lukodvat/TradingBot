@@ -336,7 +336,7 @@ with tab_bias_today:
             return "background-color: #d5f5e3" if b == "BULLISH" else \
                    "background-color: #fadbd8" if b == "BEARISH" else ""
         st.dataframe(
-            biases_today.style.applymap(_bias_color, subset=["bias"]),
+            biases_today.style.map(_bias_color, subset=["bias"]),
             use_container_width=True, hide_index=True,
         )
     else:
@@ -356,7 +356,7 @@ with tab_bias_hist:
             index="date", columns="ticker", values="bias", aggfunc="last"
         ).fillna("—")
         bias_map = {"BULLISH": 1, "NEUTRAL": 0, "BEARISH": -1, "—": None}
-        numeric = pivot.applymap(lambda x: bias_map.get(x, 0))
+        numeric = pivot.map(lambda x: bias_map.get(x, 0))
         fig4 = px.imshow(
             numeric.T,
             color_continuous_scale=["#e74c3c", "#f5f5f5", "#27ae60"],
@@ -452,7 +452,7 @@ if not vol_df.empty:
         return "background-color: #d5f5e3" if v == 1 else "background-color: #fadbd8"
 
     st.dataframe(
-        vol_df.style.applymap(_pass_color, subset=["passed"]),
+        vol_df.style.map(_pass_color, subset=["passed"]),
         use_container_width=True, hide_index=True,
     )
 else:
