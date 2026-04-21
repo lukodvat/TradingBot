@@ -197,6 +197,22 @@ CREATE INDEX IF NOT EXISTS idx_vol_filter_run    ON volatility_filter_log(run_ti
 CREATE INDEX IF NOT EXISTS idx_vol_filter_symbol ON volatility_filter_log(symbol);
 
 -- -----------------------------------------------------------------------
+-- email_log: one row per send attempt (success or failure)
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS email_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    sent_at         TEXT    NOT NULL,              -- ISO8601
+    kind            TEXT    NOT NULL,              -- 'daily_summary' | 'circuit_breaker'
+    recipient       TEXT    NOT NULL,
+    subject         TEXT    NOT NULL,
+    status          TEXT    NOT NULL,              -- 'sent' | 'failed'
+    error           TEXT,                          -- NULL on success
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at);
+
+-- -----------------------------------------------------------------------
 -- partial_exits: one row per partial profit-taking action
 -- Used to ensure each position is partially exited at most once.
 -- -----------------------------------------------------------------------
@@ -247,4 +263,5 @@ EXPECTED_TABLES = {
     "session_log",
     "volatility_filter_log",
     "partial_exits",
+    "email_log",
 }

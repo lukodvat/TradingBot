@@ -59,7 +59,7 @@ TradingBot/
 │   ├── metrics.py           # Sharpe, max drawdown, win rate, expectancy
 │   └── loader.py            # Historical bar loading with min-days validation
 ├── db/
-│   ├── schema.py            # 10 SQLite tables (incl. partial_exits); init_db()
+│   ├── schema.py            # 11 SQLite tables (incl. partial_exits, email_log); init_db()
 │   └── store.py             # Thin parameterized read/write helpers (no ORM)
 ├── notifications/
 │   └── email.py             # Daily HTML email + immediate circuit breaker alert
@@ -154,7 +154,7 @@ Bias priority when multiple runs exist for the same ticker+date: midday > mornin
 
 ---
 
-## SQLite Tables (10)
+## SQLite Tables (11)
 
 | Table | Purpose |
 |---|---|
@@ -168,6 +168,7 @@ Bias priority when multiple runs exist for the same ticker+date: midday > mornin
 | `session_log` | One row per run: tickers evaluated, tier counts, circuit breaker state |
 | `volatility_filter_log` | Per-ticker ATR/vol values and pass/fail reason |
 | `partial_exits` | Scale-out records: symbol, entry_run_ts, qty_sold, fill_price — one row per partial exit |
+| `email_log` | Every email send attempt: kind, recipient, subject, status (sent/failed), error |
 
 **Trades table population:** `main.py` only writes to `orders` at submission time.
 The `trades` table is populated by `reconcile_fills()` which polls Alpaca's `status=closed`
@@ -256,7 +257,7 @@ Access: SSH tunnel → `ssh -L 8501:localhost:8501 user@your-server`
 - `pydantic-settings` — typed config with validation
 - `plotly` + `streamlit` — interactive dashboard
 - SQLite — single-file database, WAL mode, no ORM
-- `pytest` — 374 tests across all modules
+- `pytest` — 374 tests across all modules (all passing)
 
 ## Deployment
 

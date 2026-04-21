@@ -450,6 +450,8 @@ def send_daily_email(
         recipient=settings.email_recipient,
         subject=subject,
         html_body=html_body,
+        conn=conn,
+        kind="daily_summary",
     )
 
 
@@ -457,6 +459,7 @@ def send_circuit_breaker_alert(
     settings: Settings,
     daily_pnl_pct: float,
     equity: float,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> bool:
     """
     Send an immediate email when the daily circuit breaker fires.
@@ -510,10 +513,36 @@ def send_circuit_breaker_alert(
         settings.email_recipient,
         subject,
         html_body,
+        conn=conn,
+        kind="circuit_breaker",
     )
     if ok:
         log.info("Circuit breaker alert sent to %s", settings.email_recipient)
     return ok
+
+
+def _log_email(
+    conn: Optional[sqlite3.Connection],
+    kind: str,
+    recipient: str,
+    subject: str,
+    status: str,
+    error: Optional[str] = None,
+) -> None:
+    if conn is None:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        conn.execute(
+            """
+            INSERT INTO email_log (sent_at, kind, recipient, subject, status, error)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (now, kind, recipient, subject, status, error),
+        )
+        conn.commit()
+    except Exception as exc:
+        log.warning("Failed to write email_log: %s", exc)
 
 
 def _send_via_gmail(
@@ -522,6 +551,8 @@ def _send_via_gmail(
     recipient: str,
     subject: str,
     html_body: str,
+    conn: Optional[sqlite3.Connection] = None,
+    kind: str = "daily_summary",
 ) -> bool:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -534,7 +565,9 @@ def _send_via_gmail(
             server.login(sender, password)
             server.sendmail(sender, recipient, msg.as_string())
         log.info("Daily summary email sent to %s", recipient)
+        _log_email(conn, kind, recipient, subject, "sent")
         return True
     except Exception as exc:
         log.error("Failed to send email: %s", exc)
+        _log_email(conn, kind, recipient, subject, "failed", str(exc))
         return False

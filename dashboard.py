@@ -531,6 +531,37 @@ if not headlines_df.empty:
 else:
     st.info("No headlines fetched yet.")
 
+st.divider()
+
+# ---------------------------------------------------------------------------
+# 13. Email Log
+# ---------------------------------------------------------------------------
+
+st.subheader("Email Log")
+
+email_log_df = query(
+    """
+    SELECT sent_at, kind, recipient, subject, status, error
+    FROM email_log
+    ORDER BY sent_at DESC
+    LIMIT 100
+    """,
+)
+if not email_log_df.empty:
+    sent_count = (email_log_df["status"] == "sent").sum()
+    failed_count = (email_log_df["status"] == "failed").sum()
+    st.caption(f"Last 100 attempts — {sent_count} sent, {failed_count} failed")
+
+    def _status_color(v):
+        return "background-color: #d5f5e3" if v == "sent" else "background-color: #fadbd8"
+
+    st.dataframe(
+        email_log_df.style.map(_status_color, subset=["status"]),
+        use_container_width=True, hide_index=True,
+    )
+else:
+    st.info("No emails sent yet.")
+
 # ---------------------------------------------------------------------------
 # Auto-refresh
 # ---------------------------------------------------------------------------

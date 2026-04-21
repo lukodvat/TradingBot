@@ -269,7 +269,7 @@ class TestRunQuantJob:
         run_quant_job("quant_1530", s, broker, risk, md, news, conn)
 
         broker.close_all_positions.assert_called_once()
-        mock_alert.assert_called_once_with(s, cb.daily_pnl_pct, snap.equity)
+        mock_alert.assert_called_once_with(s, cb.daily_pnl_pct, snap.equity, conn=conn)
         mock_scanner_cls.assert_not_called()
 
     @patch("main._is_macro_blackout", return_value=False)

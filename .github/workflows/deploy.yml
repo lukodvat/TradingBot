@@ -1,27 +1,44 @@
-  name: Deploy to Production
-                                                                                                      
-  on:             
-    push:
-      branches: [main]
+name: Deploy to Production
 
-  jobs:
-    deploy:
-      runs-on: ubuntu-latest
-      steps:
-        - name: Deploy to droplet
-          uses: appleboy/ssh-action@v1.0.3
-          with:                                                                                       
-            host: ${{ secrets.DEPLOY_HOST }}
-            username: ${{ secrets.DEPLOY_USER }}                                                      
-            key: ${{ secrets.DEPLOY_KEY }}
-            script: |
-              export NVM_DIR="$HOME/.nvm"
-              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-              export PATH="$HOME/.nvm/versions/node/$(node --version 2>/dev/null | tr -d v)/bin:/usr/local/bin:$PATH"
+on:
+  push:
+    branches: [main]
 
-              cd ~/TradingBot
-              git pull origin main
-              source venv/bin/activate
-              pip install -r requirements.txt
-              pm2 restart trading-bot
-              pm2 restart trading-dashboard
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest --tb=short -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to droplet
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            export PATH="$HOME/.nvm/versions/node/$(node --version 2>/dev/null | tr -d v)/bin:/usr/local/bin:$PATH"
+
+            cd ~/TradingBot
+            git pull origin main
+            source venv/bin/activate
+            pip install -r requirements.txt
+            python run_backtest.py
+            pm2 restart trading-bot
+            pm2 restart trading-dashboard

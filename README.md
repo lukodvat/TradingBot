@@ -76,7 +76,7 @@ At 4:30 PM ET, sends an HTML email containing:
 | Dashboard | Streamlit |
 | Charts | Plotly |
 | Config | Pydantic Settings |
-| Tests | pytest — 374 tests |
+| Tests | pytest — 374 tests (all passing) |
 | Language | Python 3.12 |
 
 ---
@@ -246,11 +246,11 @@ TradingBot/
 │   ├── metrics.py           # Sharpe, drawdown, win rate, expectancy
 │   └── loader.py            # Historical bar loading (always fetches SPY for RS filter)
 ├── db/
-│   ├── schema.py            # 10 SQLite tables (incl. partial_exits)
+│   ├── schema.py            # 11 SQLite tables (incl. partial_exits, email_log)
 │   └── store.py             # Read/write helpers
 ├── notifications/
 │   └── email.py             # Daily HTML email + immediate circuit breaker alert
-├── tests/                   # 374 tests
+├── tests/                   # 374 tests (all passing)
 ├── main.py                  # Entrypoint — APScheduler with Jobs A, B, C
 ├── run_backtest.py          # Standalone backtest CLI
 └── dashboard.py             # Streamlit dashboard

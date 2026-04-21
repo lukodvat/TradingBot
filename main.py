@@ -21,6 +21,7 @@ The process runs indefinitely until SIGINT/SIGTERM.
 
 import logging
 import os
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -212,7 +213,7 @@ def run_llm_job(
     settings: Settings,
     llm_client: LLMClient,
     news_provider: FinnhubProvider,
-    db_path: str,
+    db_path: "str | sqlite3.Connection",
 ) -> None:
     """
     Job A: fetch headlines → tiered triage → write sentiment_bias to SQLite.
@@ -223,7 +224,8 @@ def run_llm_job(
     session = f"llm_{llm_run}"
 
     log.info("=== Job A START [%s] ===", llm_run)
-    conn = store.get_connection(db_path)
+    _owns_conn = not isinstance(db_path, sqlite3.Connection)
+    conn = db_path if isinstance(db_path, sqlite3.Connection) else store.get_connection(db_path)
     try:
         store.start_session_log(conn, run_timestamp=run_timestamp, session=session)
 
@@ -294,7 +296,8 @@ def run_llm_job(
 
         log.info("Job A DONE [%s] — biases written for %d tickers", llm_run, len(biases))
     finally:
-        conn.close()
+        if _owns_conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +311,7 @@ def run_quant_job(
     risk: RiskManager,
     market_data: MarketDataClient,
     news_provider,
-    db_path: str,
+    db_path: "str | sqlite3.Connection",
 ) -> None:
     """
     Job B: read bias → vol filter → signal scan → risk checks → bracket orders.
@@ -320,7 +323,8 @@ def run_quant_job(
     is_fr = _is_friday(run_dt)
 
     log.info("=== Job B START [%s] ===", session)
-    conn = store.get_connection(db_path)
+    _owns_conn = not isinstance(db_path, sqlite3.Connection)
+    conn = db_path if isinstance(db_path, sqlite3.Connection) else store.get_connection(db_path)
     try:
         store.start_session_log(conn, run_timestamp=run_timestamp, session=session)
 
@@ -356,7 +360,7 @@ def run_quant_job(
             broker.close_all_positions()
             store.update_session_log(conn, run_timestamp=run_timestamp,
                                      circuit_breaker_triggered=1)
-            send_circuit_breaker_alert(settings, cb.daily_pnl_pct, snap.equity)
+            send_circuit_breaker_alert(settings, cb.daily_pnl_pct, snap.equity, conn=conn)
             return
 
         # Position management — trailing stops, time-based exits, and flattens
@@ -571,7 +575,8 @@ def run_quant_job(
             session, len(candidates), orders_submitted, snap.equity,
         )
     finally:
-        conn.close()
+        if _owns_conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
