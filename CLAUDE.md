@@ -16,7 +16,7 @@ from SQLite on every hourly pass. The LLM does not fire on every quant run.
 
 - **Paper trading ONLY.** Alpaca paper endpoint. Fails loudly if live key detected.
 - **Account size:** ~$10,000
-- **LLM budget:** <$20/month. SQLite ledger tracks per-call spend. Hard-stop at $18.
+- **LLM budget:** <$10/month. SQLite ledger tracks per-call spend. Hard-stop at $10.
 - **LLM runs 3x per trading day:** 09:00 ET (pre-market, 8h overnight lookback), 10:00 ET (morning, 24h lookback), 13:00 ET (midday, 4h lookback).
 - **Quant scanner runs every hour:** 10:30, 11:30, 12:30, 13:30, 14:30, 15:30 ET
   (6 windows). Reads sentiment bias from SQLite — no LLM API call.
@@ -53,7 +53,7 @@ TradingBot/
 ├── llm/
 │   ├── client.py            # Anthropic SDK wrapper; per-call cost tracking
 │   ├── prompts.py           # Versioned prompt templates (Haiku vs Sonnet)
-│   └── budget.py            # Monthly spend ledger; hard-stop at $18
+│   └── budget.py            # Monthly spend ledger; hard-stop at $10
 ├── backtest/
 │   ├── harness.py           # Timestamp-gated replay engine + check_backtest_gate()
 │   ├── metrics.py           # Sharpe, max drawdown, win rate, expectancy
@@ -100,15 +100,15 @@ Three runs per trading day:
 Bias priority when multiple runs exist for the same ticker+date: midday > morning > premarket.
 
 1. Calendar gate — weekday + NYSE holiday check.
-2. LLM budget check — abort if MTD spend >= $18.
+2. LLM budget check — abort if MTD spend >= $10.
 3. Fetch Finnhub headlines per lookback window.
 4. De-duplicate against `headlines_seen`. Persist new ones.
 5. **Tier 1** — regex/keyword rejection (free). Drops SEC filings, routine dividends, etc.
 6. **Tier 2** — Haiku: `{sentiment: -1..+1, confidence: 0..1}`. Logs cost to `llm_calls`.
-7. **Tier 3** — Sonnet: only if `|sentiment| > 0.6` AND `confidence > 0.75`. Cap 5/run.
+7. **Tier 3** — Sonnet: only if `|sentiment| > 0.6` AND `confidence > 0.75`. Cap 12/run.
 8. Aggregate per-ticker → BULLISH / NEUTRAL / BEARISH. Upsert `sentiment_bias`.
 
-**Cost estimate:** ~$0.10–0.16/day → ~$2.20–3.50/month (well within $18 cap).
+**Cost estimate:** ~$0.10–0.16/day → ~$2.20–3.50/month (well within $10 cap).
 
 ---
 
@@ -199,7 +199,7 @@ endpoint each Job B run and upserts actual fill data. This is the authoritative 
 | Market regime | SPY EMA50/200 gates | `analysis/regime.py` → BULL/CAUTION/BEAR |
 | Relative strength | Ticker 20d > SPY 20d | `analysis/signals.py` (longs only) |
 | Near-high filter | Price within 7% of 63d high | `analysis/signals.py` (longs only) |
-| LLM hard-stop | $18/month | `llm/budget.py` |
+| LLM hard-stop | $10/month | `llm/budget.py` |
 | Paper-only guard | URL must contain "paper" | `Settings` model_validator |
 | Backtest gate | Must have passing report | `main.py` startup |
 | NYSE holidays | 2025–2026 holiday calendar | `main._NYSE_HOLIDAYS` frozenset |
@@ -257,6 +257,14 @@ Access: SSH tunnel → `ssh -L 8501:localhost:8501 user@your-server`
 - `plotly` + `streamlit` — interactive dashboard
 - SQLite — single-file database, WAL mode, no ORM
 - `pytest` — 374 tests across all modules
+
+## Deployment
+
+Hosted on a DigitalOcean VPS. A CD pipeline via GitHub Actions automatically deploys
+on every push to `main`: pulls the latest code, restarts the PM2 process (`trading-bot`),
+and the dashboard process (`trading-dashboard`). No manual deploy steps needed.
+
+To check bot status: `pm2 list` and `pm2 logs trading-bot` (requires NVM: `source ~/.nvm/nvm.sh`).
 
 ## Default Watchlist (32 stocks, 10 sectors)
 

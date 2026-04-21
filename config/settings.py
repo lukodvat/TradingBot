@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     # LLM budget
     # -------------------------------------------------------------------------
     llm_budget_monthly_usd: float = Field(
-        default=18.0, description="Monthly LLM spend hard-stop in USD"
+        default=10.0, description="Monthly LLM spend hard-stop in USD"
     )
 
     # -------------------------------------------------------------------------

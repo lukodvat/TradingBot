@@ -6,9 +6,9 @@ the configured limit. The actual spend data lives in SQLite — this module
 just enforces the threshold.
 
 Hard-stop semantics:
-  - >= $18 (llm_budget_monthly_usd): no more LLM calls this month.
+  - >= $10 (llm_budget_monthly_usd): no more LLM calls this month.
     The LLM job exits; the quant scanner still runs using last known bias.
-  - The entrypoint logs a CRITICAL warning at $15 (soft warning threshold).
+  - The entrypoint logs a CRITICAL warning at ~$8.33 (83.3% soft warning threshold).
 """
 
 import logging
@@ -22,7 +22,7 @@ from db.store import get_monthly_llm_spend
 
 log = logging.getLogger(__name__)
 
-_SOFT_WARNING_FRACTION = 0.833  # warn at 83.3% of limit (~$15 on an $18 cap)
+_SOFT_WARNING_FRACTION = 0.833  # warn at 83.3% of limit (~$8.33 on a $10 cap)
 
 
 @dataclass
