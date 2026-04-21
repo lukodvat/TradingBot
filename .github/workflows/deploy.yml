@@ -24,3 +24,4 @@
               source venv/bin/activate
               pip install -r requirements.txt
               pm2 restart trading-bot
+              pm2 restart trading-dashboard
