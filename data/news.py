@@ -140,7 +140,7 @@ class FinnhubProvider(NewsProvider):
 
         try:
             raw = self._client.earnings_calendar(
-                symbol=None, from_=from_str, to=to_str, international=False
+                symbol=None, _from=from_str, to=to_str, international=False
             )
         except Exception as exc:
             log.warning("Finnhub earnings_calendar failed: %s", exc)
