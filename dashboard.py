@@ -145,7 +145,7 @@ with col_eq:
             color_discrete_sequence=["#2c3e50"],
         )
         fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=280)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("No equity data yet.")
 
@@ -163,7 +163,7 @@ with col_dd:
             color_discrete_sequence=["#e74c3c"],
         )
         fig2.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=280)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
     else:
         st.info("No equity data yet.")
 
@@ -240,7 +240,7 @@ with tab_today:
     if not trades_today.empty:
         display = trades_today[["symbol", "side", "qty", "fill_price", "realized_pnl", "slippage_bps", "session"]].copy()
         display.columns = ["Ticker", "Side", "Qty", "Fill $", "Realized P&L", "Slippage bps", "Session"]
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width='stretch', hide_index=True)
     else:
         st.info("No trades today.")
 
@@ -259,7 +259,7 @@ with tab_all:
         if sel_side != "All":
             filtered = filtered[filtered["side"] == sel_side]
 
-        st.dataframe(filtered, use_container_width=True, hide_index=True)
+        st.dataframe(filtered, width='stretch', hide_index=True)
         st.caption(f"{len(filtered)} rows")
     else:
         st.info("No trades in selected date range.")
@@ -277,7 +277,7 @@ with tab_hist:
         )
         fig3.add_vline(x=0, line_dash="dash", line_color="red")
         fig3.update_layout(height=300, margin=dict(l=0, r=0, t=30, b=0))
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width='stretch')
 
         win_rate = (closed["realized_pnl"] > 0).mean() * 100
         avg_win = closed[closed["realized_pnl"] > 0]["realized_pnl"].mean()
@@ -311,7 +311,7 @@ open_pos = query(
     """
 )
 if not open_pos.empty:
-    st.dataframe(open_pos, use_container_width=True, hide_index=True)
+    st.dataframe(open_pos, width='stretch', hide_index=True)
 else:
     st.info("No open positions found in trade history.")
 
@@ -337,7 +337,7 @@ with tab_bias_today:
                    "background-color: #fadbd8" if b == "BEARISH" else ""
         st.dataframe(
             biases_today.style.map(_bias_color, subset=["bias"]),
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
     else:
         st.info("No sentiment biases for today yet.")
@@ -365,7 +365,7 @@ with tab_bias_hist:
             labels={"color": "Bias"},
         )
         fig4.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
-        st.plotly_chart(fig4, use_container_width=True)
+        st.plotly_chart(fig4, width='stretch')
     else:
         st.info("No historical bias data.")
 
@@ -411,7 +411,7 @@ if not llm_df.empty:
                       labels={"cost_usd": "Cost ($)", "model": "Model"},
                       color_discrete_sequence=["#2c3e50", "#7f8c8d"])
         fig5.update_layout(height=250, margin=dict(l=0, r=0, t=0, b=0))
-        st.plotly_chart(fig5, use_container_width=True)
+        st.plotly_chart(fig5, width='stretch')
 
     with col_c2:
         llm_df["date"] = pd.to_datetime(llm_df["run_timestamp"]).dt.date
@@ -420,10 +420,10 @@ if not llm_df.empty:
                       labels={"cost_usd": "Cost ($)", "date": "Date"},
                       color_discrete_sequence=["#3498db"])
         fig6.update_layout(height=250, margin=dict(l=0, r=0, t=0, b=0))
-        st.plotly_chart(fig6, use_container_width=True)
+        st.plotly_chart(fig6, width='stretch')
 
     with st.expander("All LLM calls this month"):
-        st.dataframe(llm_df, use_container_width=True, hide_index=True)
+        st.dataframe(llm_df, width='stretch', hide_index=True)
 else:
     st.info("No LLM calls recorded this month.")
 
@@ -453,7 +453,7 @@ if not vol_df.empty:
 
     st.dataframe(
         vol_df.style.map(_pass_color, subset=["passed"]),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 else:
     st.info("No volatility filter records yet.")
@@ -476,7 +476,7 @@ session_df = query(
     """,
 )
 if not session_df.empty:
-    st.dataframe(session_df, use_container_width=True, hide_index=True)
+    st.dataframe(session_df, width='stretch', hide_index=True)
 else:
     st.info("No session records yet.")
 
@@ -525,7 +525,7 @@ if not headlines_df.empty:
     st.dataframe(
         filtered_h[["symbol", "headline", "source", "tier1_pass",
                      "tier2_sentiment", "tier2_confidence", "fetched_at"]],
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
     st.caption(f"{len(filtered_h)} headlines shown")
 else:
@@ -557,7 +557,7 @@ if not email_log_df.empty:
 
     st.dataframe(
         email_log_df.style.map(_status_color, subset=["status"]),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 else:
     st.info("No emails sent yet.")
