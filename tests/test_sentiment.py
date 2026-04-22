@@ -338,6 +338,37 @@ class TestTier1Filter:
         result = tier1_filter(h)
         assert not result.passed
 
+    def test_rejects_market_recap(self):
+        h = make_headline(headline="Wondering what's happening in today's S&P500 pre-market session?")
+        result = tier1_filter(h)
+        assert not result.passed
+
+    def test_rejects_listicle(self):
+        h = make_headline(headline="5 stocks to watch this week")
+        result = tier1_filter(h)
+        assert not result.passed
+
+    def test_rejects_analyst_coverage_initiation(self):
+        h = make_headline(headline="Barclays initiates coverage on semiconductor sector")
+        result = tier1_filter(h)
+        assert not result.passed
+        assert result.reason == "analyst_coverage"
+
+    def test_rejects_13f_filing(self):
+        h = make_headline(headline="Berkshire Hathaway takes a stake in Apple, 13F reveals")
+        result = tier1_filter(h)
+        assert not result.passed
+
+    def test_passes_price_target_raised(self):
+        """Real analyst PT changes must still pass."""
+        h = make_headline(headline="Morgan Stanley raises Apple price target to $250")
+        assert tier1_filter(h).passed
+
+    def test_passes_earnings_beat_after_hours(self):
+        """'After-hours' as a timing adverb must pass, not the recap phrase."""
+        h = make_headline(headline="Apple beats earnings, stock surges in after-hours trading")
+        assert tier1_filter(h).passed
+
 
 # ---------------------------------------------------------------------------
 # analysis/sentiment.py — SentimentAnalyzer (integration)

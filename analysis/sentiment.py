@@ -88,7 +88,15 @@ _REJECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("routine_dividend",  re.compile(r"\b(declares? (quarterly|monthly|annual) dividend|ex-dividend date|dividend payment)\b", re.I)),
     ("insider_trade",     re.compile(r"\b(insider (bought?|sold?|purchases?|sales?)|director (buys?|sells?))\b", re.I)),
     ("index_rebalance",   re.compile(r"\b(index (rebalance|reconstitution)|added to (S&P|Nasdaq|Dow))\b", re.I)),
-    ("price_target_minor",re.compile(r"\b(reiterates? (buy|hold|sell)|maintains? (buy|hold|sell)|price target (unchanged|maintained))\b", re.I)),
+    ("price_target_minor",re.compile(r"\b(reiterates? (buy|hold|sell|outperform|overweight|underweight|neutral)|maintains? (buy|hold|sell|outperform|overweight|underweight|neutral)|price target (unchanged|maintained))\b", re.I)),
+    # Market-wide recaps and session wraps — no ticker-specific signal.
+    ("market_recap",      re.compile(r"\b(pre[- ]?market session|after[- ]?hours session|market (wrap|close|open|recap)|today'?s (movers|gainers|losers)|stocks (moving|to watch)|biggest (gainers|losers)|what'?s (happening|moving) in)\b", re.I)),
+    # SEO listicles and clickbait — no actionable content.
+    ("listicle",          re.compile(r"\b((top|best|worst) \d+ (stocks?|picks?|buys?|shares?)|\d+ (stocks?|reasons?|things?|ways?) (to|you|that|why)|here'?s why|wondering (what|why|if|how)|should you (buy|sell))\b", re.I)),
+    # Generic analyst activity with no substance (PT changes still pass).
+    ("analyst_coverage",  re.compile(r"\b(initiates? coverage|resumes? coverage|transfers? coverage|assumes? coverage)\b", re.I)),
+    # 13F / institutional holdings disclosures.
+    ("institutional_holdings", re.compile(r"\b(13F|institutional (holdings?|ownership)|hedge fund (stake|position|holdings?)|takes? (a )?stake in)\b", re.I)),
 ]
 
 
