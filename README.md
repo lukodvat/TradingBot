@@ -1,6 +1,6 @@
 # TradingBot
 
-An autonomous algorithmic trading system that combines technical analysis with LLM-driven news sentiment to trade a ~$10,000 paper account on Alpaca. The LLM does not find trades — it filters out bad ones.
+An autonomous paper-trading bot for a $10,000 simulated account. It reads the market with technical indicators, reads the news with AI, and only takes trades when both agree.
 
 ---
 
@@ -28,7 +28,7 @@ Fetches financial headlines from Finnhub for 32 watchlist tickers and runs them 
 - **Tier 2** — Claude Haiku scores each headline: `{sentiment: -1..+1, confidence: 0..1}`.
 - **Tier 3** — Claude Sonnet deep assessment. Only fires when sentiment is strong and confident (capped at 5 calls per run).
 
-The result is a per-ticker bias — BULLISH, NEUTRAL, or BEARISH — written to SQLite. When multiple runs exist for the same ticker on the same day, midday bias takes priority over morning, which takes priority over pre-market. Estimated LLM cost: ~$1.75–$3.50/month.
+The result is a per-ticker bias — BULLISH, NEUTRAL, or BEARISH — written to SQLite. When multiple runs exist for the same ticker on the same day, midday bias takes priority over morning. Estimated LLM cost: ~$3–$4/month.
 
 **Job B — Quant Scanner**
 
@@ -128,7 +128,7 @@ A Streamlit dashboard connects to the same SQLite database and provides a full r
 - An [Alpaca](https://alpaca.markets) paper trading account
 - An [Anthropic](https://console.anthropic.com) API key
 - A [Finnhub](https://finnhub.io) free API key
-- A Gmail account with an [App Password](https://support.google.com/accounts/answer/185833) (for email notifications)
+- A [Resend](https://resend.com) account for email notifications (free tier — 100 emails/day)
 
 ### 2. Install
 
@@ -160,11 +160,14 @@ ANTHROPIC_API_KEY=sk-ant-...
 # Finnhub
 FINNHUB_API_KEY=your_finnhub_key
 
-# Email notifications (optional)
+# Email notifications (optional) — delivered via Resend HTTPS API
+# (DigitalOcean blocks outbound SMTP, so Gmail SMTP will not work).
+# For the Resend sandbox, use EMAIL_SENDER=onboarding@resend.dev, which
+# delivers only to the email on the Resend account.
 EMAIL_ENABLED=true
 EMAIL_RECIPIENT=you@example.com
-EMAIL_SENDER=yourbot@gmail.com
-EMAIL_APP_PASSWORD=your_gmail_app_password
+EMAIL_SENDER=onboarding@resend.dev
+RESEND_API_KEY=re_your_resend_api_key
 ```
 
 ### 4. Run the backtest
@@ -310,7 +313,11 @@ cat > ~/TradingBot/start-dashboard.sh <<'EOF'
 #!/bin/bash
 cd ~/TradingBot
 source venv/bin/activate
-exec streamlit run dashboard.py --server.port 8501 --server.headless true
+exec streamlit run dashboard.py \
+  --server.port 8501 \
+  --server.headless true \
+  --server.enableCORS false \
+  --server.enableXsrfProtection false
 EOF
 chmod +x ~/TradingBot/start-dashboard.sh
 pm2 start ~/TradingBot/start-dashboard.sh --name trading-dashboard

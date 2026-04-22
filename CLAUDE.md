@@ -21,7 +21,7 @@ from SQLite on every hourly pass. The LLM does not fire on every quant run.
 - **Quant scanner runs every hour:** 10:30, 11:30, 12:30, 13:30, 14:30, 15:30 ET
   (6 windows). Reads sentiment bias from SQLite — no LLM API call.
 - **Daily email at 16:30 ET:** LLM-written summary with grade 1–10, P&L, trades,
-  period performance. Sent via Gmail SMTP.
+  period performance. Sent via Resend HTTPS API (DO blocks outbound SMTP).
 - **Immediate circuit breaker alert:** Separate email fires at the moment of
   liquidation — does not wait for 16:30 end-of-day summary.
 - **Same-ticker cooldown:** once a position is entered, that ticker is skipped for
@@ -149,7 +149,7 @@ Bias priority when multiple runs exist for the same ticker+date: midday > mornin
 2. Call Haiku to write a 2–3 sentence summary and assign a grade 1–10.
 3. Build HTML email: summary, grade, performance table (Today/Week/Month/6M/YTD/1Y),
    trades table, open positions, LLM spend bar.
-4. Send via Gmail SMTP.
+4. Send via Resend HTTPS API.
 
 ---
 

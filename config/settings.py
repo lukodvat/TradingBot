@@ -272,10 +272,13 @@ class Settings(BaseSettings):
         default="", description="Recipient address for daily summary email"
     )
     email_sender: str = Field(
-        default="", description="Gmail address used to send notifications"
+        default="",
+        description="From address for notifications. Use 'onboarding@resend.dev' for "
+                    "Resend's sandbox (delivers only to the Resend account owner), "
+                    "or any address on a verified domain.",
     )
-    email_app_password: str = Field(
-        default="", description="Gmail app password (not account password)"
+    resend_api_key: str = Field(
+        default="", description="Resend API key (https://resend.com) — used in place of SMTP"
     )
 
     # -------------------------------------------------------------------------

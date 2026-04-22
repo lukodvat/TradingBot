@@ -8,20 +8,20 @@ Structure:
   4. Open positions.
   5. LLM spend tracker (month-to-date vs $10 cap).
 
-Delivery: Gmail SMTP with app password.
-Set EMAIL_ENABLED=true, EMAIL_RECIPIENT, EMAIL_SENDER, EMAIL_APP_PASSWORD in .env.
+Delivery: Resend HTTPS API (DigitalOcean blocks outbound SMTP on port 25/465/587).
+Set EMAIL_ENABLED=true, EMAIL_RECIPIENT, EMAIL_SENDER, RESEND_API_KEY in .env.
+Sender must be either Resend's sandbox (onboarding@resend.dev — only delivers to
+the account owner's address) or an address on a verified domain.
 """
 
 import logging
-import smtplib
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 import anthropic
+import requests
 
 from config.settings import Settings
 from db.store import get_monthly_llm_spend
@@ -422,8 +422,8 @@ def send_daily_email(
         log.info("Email disabled — skipping daily notification")
         return False
 
-    if not all([settings.email_recipient, settings.email_sender, settings.email_app_password]):
-        log.warning("Email settings incomplete — set EMAIL_RECIPIENT, EMAIL_SENDER, EMAIL_APP_PASSWORD")
+    if not all([settings.email_recipient, settings.email_sender, settings.resend_api_key]):
+        log.warning("Email settings incomplete — set EMAIL_RECIPIENT, EMAIL_SENDER, RESEND_API_KEY")
         return False
 
     log.info("Building daily summary email for %s...", date)
@@ -444,9 +444,9 @@ def send_daily_email(
         budget=settings.llm_budget_monthly_usd,
     )
 
-    return _send_via_gmail(
+    return _send_via_resend(
+        api_key=settings.resend_api_key,
         sender=settings.email_sender,
-        password=settings.email_app_password,
         recipient=settings.email_recipient,
         subject=subject,
         html_body=html_body,
@@ -469,7 +469,7 @@ def send_circuit_breaker_alert(
     """
     if not settings.email_enabled:
         return False
-    if not all([settings.email_recipient, settings.email_sender, settings.email_app_password]):
+    if not all([settings.email_recipient, settings.email_sender, settings.resend_api_key]):
         return False
 
     now_et = datetime.now(timezone.utc).astimezone(_ET)
@@ -507,12 +507,12 @@ def send_circuit_breaker_alert(
 </body>
 </html>"""
 
-    ok = _send_via_gmail(
-        settings.email_sender,
-        settings.email_app_password,
-        settings.email_recipient,
-        subject,
-        html_body,
+    ok = _send_via_resend(
+        api_key=settings.resend_api_key,
+        sender=settings.email_sender,
+        recipient=settings.email_recipient,
+        subject=subject,
+        html_body=html_body,
         conn=conn,
         kind="circuit_breaker",
     )
@@ -545,26 +545,37 @@ def _log_email(
         log.warning("Failed to write email_log: %s", exc)
 
 
-def _send_via_gmail(
+_RESEND_API_URL = "https://api.resend.com/emails"
+
+
+def _send_via_resend(
+    api_key: str,
     sender: str,
-    password: str,
     recipient: str,
     subject: str,
     html_body: str,
     conn: Optional[sqlite3.Connection] = None,
     kind: str = "daily_summary",
 ) -> bool:
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = sender
-    msg["To"] = recipient
-    msg.attach(MIMEText(html_body, "html"))
-
+    payload = {
+        "from": sender,
+        "to": [recipient],
+        "subject": subject,
+        "html": html_body,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender, password)
-            server.sendmail(sender, recipient, msg.as_string())
-        log.info("Daily summary email sent to %s", recipient)
+        resp = requests.post(_RESEND_API_URL, json=payload, headers=headers, timeout=15)
+        if resp.status_code >= 400:
+            err = f"HTTP {resp.status_code}: {resp.text[:300]}"
+            log.error("Failed to send email: %s", err)
+            _log_email(conn, kind, recipient, subject, "failed", err)
+            return False
+        log.info("Daily summary email sent to %s (resend id=%s)",
+                 recipient, resp.json().get("id", "?"))
         _log_email(conn, kind, recipient, subject, "sent")
         return True
     except Exception as exc:

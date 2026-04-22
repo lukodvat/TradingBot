@@ -36,8 +36,8 @@ def make_settings(**overrides) -> Settings:
         anthropic_api_key="test", finnhub_api_key="test",
         email_enabled=True,
         email_recipient="trader@example.com",
-        email_sender="bot@gmail.com",
-        email_app_password="secret",
+        email_sender="onboarding@resend.dev",
+        resend_api_key="re_test_key",
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -294,9 +294,9 @@ class TestSendDailyEmail:
         result = send_daily_email(conn, s, date=TODAY)
         assert result is False
 
-    @patch("notifications.email._send_via_gmail")
+    @patch("notifications.email._send_via_resend")
     @patch("notifications.email.generate_llm_summary")
-    def test_calls_smtp_when_enabled(self, mock_summary, mock_send):
+    def test_calls_sender_when_enabled(self, mock_summary, mock_send):
         mock_summary.return_value = ("Good day.", 7)
         mock_send.return_value = True
         conn = make_db()
@@ -305,9 +305,9 @@ class TestSendDailyEmail:
         assert result is True
         mock_send.assert_called_once()
 
-    @patch("notifications.email._send_via_gmail")
+    @patch("notifications.email._send_via_resend")
     @patch("notifications.email.generate_llm_summary")
-    def test_smtp_failure_returns_false(self, mock_summary, mock_send):
+    def test_send_failure_returns_false(self, mock_summary, mock_send):
         mock_summary.return_value = ("OK.", 5)
         mock_send.return_value = False
         conn = make_db()
