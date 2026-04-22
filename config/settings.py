@@ -142,17 +142,14 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # News / data fetching
     # -------------------------------------------------------------------------
-    news_lookback_premarket_hours: int = Field(
-        default=8, description="Hours of headline lookback for 09:00 ET pre-market run (overnight news)"
-    )
     news_lookback_morning_hours: int = Field(
-        default=24, description="Hours of headline lookback for 10:00 ET morning run (full prior-day narrative)"
+        default=16, description="Hours of headline lookback for 10:00 ET morning run (covers yesterday's close through this morning)"
     )
     news_lookback_afternoon_hours: int = Field(
         default=4, description="Hours of headline lookback for 13:00 ET midday run"
     )
     max_news_age_hours: int = Field(
-        default=28, description="Headlines older than this are discarded before triage (covers 24h morning lookback + buffer)"
+        default=20, description="Headlines older than this are discarded before triage (covers 16h morning lookback + buffer)"
     )
 
     # -------------------------------------------------------------------------

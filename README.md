@@ -9,8 +9,7 @@ An autonomous algorithmic trading system that combines technical analysis with L
 The system runs three scheduled jobs on a server, all sharing a single SQLite database.
 
 ```
-09:00 ET  ─── Job A: Pre-market sentiment (overnight news, 8h lookback)
-10:00 ET  ─── Job A: Morning sentiment (full prior-day narrative, 24h lookback)
+10:00 ET  ─── Job A: Morning sentiment (prior-close through morning, 16h lookback)
 10:30 ET  ─┐
 11:30 ET  ─┤
 12:30 ET  ─┤─ Job B: Quant scanner reads bias, finds setups, executes orders
@@ -23,7 +22,7 @@ The system runs three scheduled jobs on a server, all sharing a single SQLite da
 
 **Job A — LLM Sentiment Pipeline**
 
-Fetches financial headlines from Finnhub for 32 watchlist tickers and runs them through a three-tier triage. Runs three times daily — pre-market (overnight news), morning (full prior-day narrative), and midday (intraday update). SQLite de-duplication ensures headlines are never scored twice.
+Fetches financial headlines from Finnhub for 32 watchlist tickers and runs them through a three-tier triage. Runs twice daily — morning (prior-close through morning) and midday (intraday update). SQLite de-duplication ensures headlines are never scored twice.
 
 - **Tier 1** — Free regex filter. Instantly drops SEC filings, routine dividends, index rebalances.
 - **Tier 2** — Claude Haiku scores each headline: `{sentiment: -1..+1, confidence: 0..1}`.

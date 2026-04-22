@@ -17,7 +17,7 @@ from SQLite on every hourly pass. The LLM does not fire on every quant run.
 - **Paper trading ONLY.** Alpaca paper endpoint. Fails loudly if live key detected.
 - **Account size:** ~$10,000
 - **LLM budget:** <$10/month. SQLite ledger tracks per-call spend. Hard-stop at $10.
-- **LLM runs 3x per trading day:** 09:00 ET (pre-market, 8h overnight lookback), 10:00 ET (morning, 24h lookback), 13:00 ET (midday, 4h lookback).
+- **LLM runs 2x per trading day:** 10:00 ET (morning, 16h lookback — prior close through morning), 13:00 ET (midday, 4h lookback).
 - **Quant scanner runs every hour:** 10:30, 11:30, 12:30, 13:30, 14:30, 15:30 ET
   (6 windows). Reads sentiment bias from SQLite — no LLM API call.
 - **Daily email at 16:30 ET:** LLM-written summary with grade 1–10, P&L, trades,
@@ -88,16 +88,15 @@ All share one SQLite database. No direct coupling between jobs.
 
 ---
 
-### Job A — LLM Sentiment (09:00, 10:00, 13:00 ET)
+### Job A — LLM Sentiment (10:00, 13:00 ET)
 
 **Purpose:** Set per-ticker daily sentiment bias that Job B reads for free.
 
-Three runs per trading day:
-- **09:00 ET pre-market** — 8h lookback (captures overnight news 1AM–9AM). Biases ready before first quant scan.
-- **10:00 ET morning** — 24h lookback (full prior-day narrative + morning). SQLite de-dup prevents re-processing.
+Two runs per trading day:
+- **10:00 ET morning** — 16h lookback (covers yesterday's close through this morning, including overnight). Biases ready before the 10:30 scanner.
 - **13:00 ET midday** — 4h lookback (intraday update; overwrites morning bias if stronger signal).
 
-Bias priority when multiple runs exist for the same ticker+date: midday > morning > premarket.
+Bias priority when multiple runs exist for the same ticker+date: midday > morning.
 
 1. Calendar gate — weekday + NYSE holiday check.
 2. LLM budget check — abort if MTD spend >= $10.

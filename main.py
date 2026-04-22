@@ -243,9 +243,8 @@ def run_llm_job(
 
         # News fetch
         lookback_map = {
-            "premarket": settings.news_lookback_premarket_hours,  # 9:00 ET — overnight news
-            "morning":   settings.news_lookback_morning_hours,    # 10:00 ET — full prior-day narrative
-            "midday":    settings.news_lookback_afternoon_hours,  # 13:00 ET — intraday update
+            "morning": settings.news_lookback_morning_hours,    # 10:00 ET — prior-close through this morning
+            "midday":  settings.news_lookback_afternoon_hours,  # 13:00 ET — intraday update
         }
         lookback = lookback_map.get(llm_run, settings.news_lookback_morning_hours)
         symbols = load_watchlist(settings.watchlist_path)
@@ -652,15 +651,7 @@ def main() -> None:
     # --- APScheduler ---
     scheduler = BlockingScheduler(timezone=str(_ET))
 
-    # Job A — LLM runs (3× daily: pre-market overnight, morning narrative, midday update)
-    scheduler.add_job(
-        run_llm_job,
-        CronTrigger(hour=9, minute=0, timezone=str(_ET)),
-        args=["premarket", settings, llm_client, news_provider, settings.db_path],
-        id="llm_premarket",
-        name="LLM Sentiment — Pre-Market",
-        misfire_grace_time=300,
-    )
+    # Job A — LLM runs (2× daily: morning narrative, midday update)
     scheduler.add_job(
         run_llm_job,
         CronTrigger(hour=10, minute=0, timezone=str(_ET)),
