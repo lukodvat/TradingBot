@@ -236,7 +236,7 @@ class TestSignalScanner:
         assert result == []
 
     def test_low_volume_skipped(self):
-        scanner, conn = make_scanner()
+        scanner, conn = make_scanner(make_settings(volume_multiplier=1.2))
         seed_bias(conn, "AAPL", "BULLISH")
         bars = make_bullish_bars()
         bars["volume"] = 100_000.0  # uniform volume → ratio = 1.0 < 1.2

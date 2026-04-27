@@ -93,10 +93,10 @@ class Settings(BaseSettings):
     rsi_min: float = Field(default=50.0, description="RSI lower bound for long entries")
     rsi_max: float = Field(default=80.0, description="RSI upper bound for long entries")
     volume_multiplier: float = Field(
-        default=1.2, description="Min current volume vs 20-day average"
+        default=0.8, description="Min current volume vs 20-day average"
     )
     volume_multiplier_open: float = Field(
-        default=2.0,
+        default=1.3,
         description="Stricter volume multiplier for the 10:30 ET opening session",
     )
     open_session_minute_marker: int = Field(
@@ -242,7 +242,7 @@ class Settings(BaseSettings):
     # Signal quality improvements
     # -------------------------------------------------------------------------
     require_relative_strength: bool = Field(
-        default=True,
+        default=False,
         description="Long entries require ticker to outperform SPY over 20 days",
     )
     near_high_lookback: int = Field(
@@ -250,8 +250,8 @@ class Settings(BaseSettings):
         description="Rolling window (bars) for the near-high proximity filter",
     )
     near_high_max_drawdown: float = Field(
-        default=0.10,
-        description="Max allowed distance below the rolling high (10% = within 10% of high)",
+        default=0.15,
+        description="Max allowed distance below the rolling high (15% = within 15% of high)",
     )
 
     # -------------------------------------------------------------------------

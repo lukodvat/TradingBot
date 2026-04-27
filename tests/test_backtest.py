@@ -746,7 +746,7 @@ class TestRelativeStrengthFilter:
 
     def test_rs_filter_blocks_underperformer(self):
         bars = make_trending_bars(60, seed=7)
-        h = self._make_harness()
+        h = self._make_harness(require_relative_strength=True)
         ticker_ret = self._ticker_20d_return(bars)
         # SPY return is 5pp higher → ticker underperforms → blocked
         result = h._compute_signal(bars, spy_return_20d=ticker_ret + 0.05)
@@ -754,7 +754,7 @@ class TestRelativeStrengthFilter:
 
     def test_rs_filter_passes_outperformer(self):
         bars = make_trending_bars(60, seed=7)
-        h = self._make_harness()
+        h = self._make_harness(require_relative_strength=True)
         ticker_ret = self._ticker_20d_return(bars)
         # SPY return is 5pp lower → ticker outperforms → passes
         result = h._compute_signal(bars, spy_return_20d=ticker_ret - 0.05)
@@ -763,7 +763,7 @@ class TestRelativeStrengthFilter:
     def test_rs_filter_blocks_when_equal_to_spy(self):
         # Boundary: ticker return == SPY return → ticker must EXCEED SPY, not match
         bars = make_trending_bars(60, seed=7)
-        h = self._make_harness()
+        h = self._make_harness(require_relative_strength=True)
         ticker_ret = self._ticker_20d_return(bars)
         result = h._compute_signal(bars, spy_return_20d=ticker_ret)
         assert result is None  # equal is not strictly greater

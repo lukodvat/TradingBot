@@ -131,9 +131,9 @@ Bias priority when multiple runs exist for the same ticker+date: midday > mornin
     - High vol (>30% annualized): reduces max positions to 2.
 13. **Earnings blackout** — skip tickers with earnings within 2 calendar days.
 14. Volatility filter (ATR/price, realized vol).
-15. Signal scan — EMA(20) trend + RSI(14) in [50,80] + volume > 1.2x avg (2.0x at 10:30 open)
-    + matching bias + **relative strength** (ticker 20d return > SPY 20d return, longs only)
-    + **near-high filter** (price within 10% of 63-day high, longs only).
+15. Signal scan — EMA(20) trend + RSI(14) in [50,80] + volume > 0.8x avg (1.3x at 10:30 open)
+    + matching bias + **relative strength** (optional, default OFF — ticker 20d return > SPY 20d return, longs only)
+    + **near-high filter** (price within 15% of 63-day high, longs only).
 16. Apply regime direction filter to candidates.
 17. **ATR-based sizing** — stop distance = ATR × 1.5; qty set so dollar-risk = 0.5% equity. Caps at max_position_pct and sector_headroom.
 18. **Sentiment-as-sizer** — BULLISH bias on a LONG (or BEARISH on SHORT) scales target notional ×1.25.
@@ -193,12 +193,12 @@ endpoint each Job B run and upserts actual fill data. This is the authoritative 
 | Overnight flatten | 15:30 ET (with exception) | `portfolio.manage_flattens()` |
 | Weekend flatten | Friday 15:30 ET, always | `portfolio.manage_flattens()` |
 | 15:30 entries gate | No new entries at final scan | `main.run_quant_job()` |
-| Open session vol | 2.0× volume required at 10:30 ET | `signals.scan(volume_multiplier_override)` |
+| Open session vol | 1.3× volume required at 10:30 ET | `signals.scan(volume_multiplier_override)` |
 | Earnings blackout | 2 days before earnings | `news.get_upcoming_earnings()` |
 | Macro blackout | FOMC + CPI dates | `config/macro_events.yaml` + `main._is_macro_blackout()` |
 | Market regime | SPY EMA50/200 gates | `analysis/regime.py` → BULL/CAUTION/BEAR |
-| Relative strength | Ticker 20d > SPY 20d | `analysis/signals.py` (longs only) |
-| Near-high filter | Price within 10% of 63d high | `analysis/signals.py` (longs only) |
+| Relative strength | Ticker 20d > SPY 20d (opt-in via setting) | `analysis/signals.py` (longs only) |
+| Near-high filter | Price within 15% of 63d high | `analysis/signals.py` (longs only) |
 | LLM hard-stop | $10/month | `llm/budget.py` |
 | Paper-only guard | URL must contain "paper" | `Settings` model_validator |
 | Backtest gate | Must have passing report | `main.py` startup |
