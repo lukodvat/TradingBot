@@ -385,8 +385,8 @@ class RiskManager:
 
     @staticmethod
     def _floor_shares(qty: float) -> float:
-        """Floor to 2 decimal places (Alpaca supports fractional shares)."""
-        return float(int(qty * 100) / 100)
+        """Floor to whole shares — Alpaca rejects fractional bracket orders."""
+        return float(int(qty))
 
     def _reject(
         self, qty: float, price: float, reason: RejectionReason
