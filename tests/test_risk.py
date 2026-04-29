@@ -228,14 +228,15 @@ class TestATRSizing:
         assert abs(result.stop_pct - 0.015) < 1e-9
 
     def test_atr_sizing_dollar_risk_uniform(self):
-        """Higher ATR → fewer shares, same dollar-risk (risk-target dominates max_pos cap)."""
-        # risk = 0.1% * $10k = $10. low-vol notional = $10/0.015 = $666; high-vol = $10/0.06 = $166.
-        # Both fit comfortably under max_position_pct ($1000) so risk-based sizing dominates.
+        """Higher ATR → fewer shares, similar dollar-risk (risk-target dominates max_pos cap)."""
+        # Use $1M equity so integer-share quantization noise is negligible.
+        # risk = 0.1% * $1M = $1000. low-vol notional = $1000/0.015 = $66,666; high-vol = $1000/0.06 = $16,666.
+        # Both fit comfortably under max_position_pct ($100k) so risk-based sizing dominates.
         rm = make_rm(risk_per_trade_pct=0.001, atr_stop_multiplier=1.5)
-        low_vol = self._size(rm, atr_pct=0.01)
-        high_vol = self._size(rm, atr_pct=0.04)
-        assert abs(low_vol.risk_dollars - 10.0) < 1.0
-        assert abs(high_vol.risk_dollars - 10.0) < 1.0
+        low_vol = self._size(rm, atr_pct=0.01, equity=1_000_000.0, buying_power=1_000_000.0)
+        high_vol = self._size(rm, atr_pct=0.04, equity=1_000_000.0, buying_power=1_000_000.0)
+        assert abs(low_vol.risk_dollars - 1000.0) < 100.0
+        assert abs(high_vol.risk_dollars - 1000.0) < 100.0
         assert high_vol.qty < low_vol.qty
 
     def test_atr_sizing_capped_at_max_position_pct(self):
