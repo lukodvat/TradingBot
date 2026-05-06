@@ -40,3 +40,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Claude Code local-only files
+CLAUDE.md
+.claude/
