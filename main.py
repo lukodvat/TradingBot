@@ -144,7 +144,7 @@ def _log_startup_banner(settings: Settings, broker: BrokerClient) -> None:
 
     equity = positions = "?"
     try:
-        snap = broker.get_account_snapshot()
+        snap = broker.snapshot()
         equity = f"${snap.equity:,.2f}"
         positions = str(len(snap.positions))
     except Exception as exc:
