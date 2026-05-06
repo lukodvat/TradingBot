@@ -43,7 +43,7 @@ from analysis.signals import SignalScanner
 from analysis.volatility import filter_watchlist, passing_tickers
 from backtest.harness import check_backtest_gate
 from notifications.email import send_daily_email, send_circuit_breaker_alert
-from llm.budget import assert_budget_ok
+from llm.budget import assert_budget_ok, check_budget
 from llm.client import LLMClient
 
 log = logging.getLogger(__name__)
@@ -125,6 +125,48 @@ def _is_macro_blackout(date_str: str, path: str) -> bool:
     return date_str in blackout_dates
 
 
+def _log_startup_banner(settings: Settings, broker: BrokerClient) -> None:
+    """One-line snapshot of bot health on boot. Never raises."""
+    import subprocess
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL, timeout=2,
+        ).decode().strip()
+    except Exception:
+        sha = "unknown"
+
+    paper_host = "?"
+    try:
+        from urllib.parse import urlparse
+        paper_host = urlparse(settings.alpaca_base_url).netloc or settings.alpaca_base_url
+    except Exception:
+        pass
+
+    equity = positions = "?"
+    try:
+        snap = broker.get_account_snapshot()
+        equity = f"${snap.equity:,.2f}"
+        positions = str(len(snap.positions))
+    except Exception as exc:
+        log.warning("startup banner: account snapshot failed: %s", exc)
+
+    spend_str = "?"
+    try:
+        conn = store.get_connection(settings.db_path)
+        try:
+            status = check_budget(conn, settings)
+            spend_str = f"${status.monthly_spend:.2f}/${status.monthly_limit:.0f}"
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("startup banner: budget check failed: %s", exc)
+
+    log.info(
+        "BANNER sha=%s alpaca=%s equity=%s positions=%s llm_mtd=%s",
+        sha, paper_host, equity, positions, spend_str,
+    )
+
+
 def _compute_spy_return_20d(spy_bars) -> float | None:
     """Return SPY's 20-day price return as a fraction, or None if not enough data."""
     if spy_bars is None or len(spy_bars) < 21:
@@ -199,8 +241,10 @@ def reconcile_fills(broker: BrokerClient, conn, run_timestamp: str) -> int:
         log.info("Reconciled fill: %s %s x%.2f @ %.2f", side_raw, symbol, qty, fill_price)
         inserted += 1
 
-    if inserted:
-        log.info("reconcile_fills: inserted %d new trade rows", inserted)
+    log.info(
+        "reconcile_fills: alpaca returned %d filled orders since %s, inserted %d new trade rows",
+        len(filled_orders), since.isoformat(timespec="seconds"), inserted,
+    )
     return inserted
 
 
@@ -647,6 +691,8 @@ def main() -> None:
     news_provider = FinnhubProvider(settings)
 
     log.info("All clients initialised. Starting scheduler...")
+
+    _log_startup_banner(settings, broker)
 
     # --- APScheduler ---
     scheduler = BlockingScheduler(timezone=str(_ET))

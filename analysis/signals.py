@@ -19,6 +19,7 @@ these are skipped before any indicator computation.
 """
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 import sqlite3
@@ -96,9 +97,11 @@ class SignalScanner:
         log.debug("Sentiment biases for %s: %s", date, biases)
 
         candidates: list[SignalCandidate] = []
+        reasons: Counter = Counter()
 
         for symbol, df in bars.items():
             if symbol in held_today:
+                reasons["cooldown"] += 1
                 log.debug("SKIP %s — already held today", symbol)
                 continue
 
@@ -107,14 +110,16 @@ class SignalScanner:
             # BEARISH blocks LONG, BULLISH blocks SHORT. NEUTRAL/missing is permitted.
             bias = biases.get(symbol) or "NEUTRAL"
 
-            candidate = self._evaluate(symbol, df, bias, volume_multiplier_override)
+            candidate, reason = self._evaluate(symbol, df, bias, volume_multiplier_override)
+            reasons[reason] += 1
             if candidate is not None:
                 candidates.append(candidate)
 
         candidates.sort(key=lambda c: c.conviction, reverse=True)
+        funnel = " ".join(f"{k}={v}" for k, v in sorted(reasons.items()) if k != "pass")
         log.info(
-            "Signal scan complete: %d candidates from %d tickers",
-            len(candidates), len(bars),
+            "Signal scan: evaluated=%d pass=%d %s",
+            len(bars), reasons.get("pass", 0), funnel,
         )
         return candidates
 
@@ -128,13 +133,17 @@ class SignalScanner:
         df: pd.DataFrame,
         bias: str,
         volume_multiplier_override: Optional[float] = None,
-    ) -> Optional[SignalCandidate]:
+    ) -> tuple[Optional[SignalCandidate], str]:
         """
-        Apply technical criteria for one ticker. Returns None if criteria not met.
+        Apply technical criteria for one ticker.
+
+        Returns (candidate, reason). When candidate is None, reason names the
+        gate that rejected the ticker so callers can build a funnel summary.
+        On success reason is "pass".
         """
         if len(df) < _MIN_BARS:
             log.debug("SKIP %s — insufficient bars (%d < %d)", symbol, len(df), _MIN_BARS)
-            return None
+            return None, "insufficient_bars"
 
         s = self._s
         close = df["close"]
@@ -146,7 +155,7 @@ class SignalScanner:
 
         if ema_series is None or rsi_series is None:
             log.debug("SKIP %s — indicator computation returned None", symbol)
-            return None
+            return None, "indicator_none"
 
         ema_val = float(ema_series.iloc[-1])
         rsi_val = float(rsi_series.iloc[-1])
@@ -154,7 +163,7 @@ class SignalScanner:
 
         if pd.isna(ema_val) or pd.isna(rsi_val):
             log.debug("SKIP %s — NaN indicator (ema=%.2f rsi=%.2f)", symbol, ema_val, rsi_val)
-            return None
+            return None, "indicator_nan"
 
         # --- Volume ratio ---
         avg_vol = float(volume.iloc[-21:-1].mean())  # 20-bar average, excluding current
@@ -168,15 +177,15 @@ class SignalScanner:
             direction = SHORT
         else:
             log.debug("SKIP %s — price == EMA, no directional bias", symbol)
-            return None
+            return None, "no_direction"
 
         # --- Sentiment veto (only a contradicting bias blocks) ---
         if direction == LONG and bias == "BEARISH":
             log.debug("SKIP %s — LONG vetoed by BEARISH bias", symbol)
-            return None
+            return None, "bias_veto"
         if direction == SHORT and bias == "BULLISH":
             log.debug("SKIP %s — SHORT vetoed by BULLISH bias", symbol)
-            return None
+            return None, "bias_veto"
 
         # --- Direction-aware RSI filter ---
         # LONG wants RSI in [rsi_min, rsi_max] (momentum into strength).
@@ -187,7 +196,7 @@ class SignalScanner:
             rsi_lo, rsi_hi = 100.0 - s.rsi_max, 100.0 - s.rsi_min
         if not (rsi_lo <= rsi_val <= rsi_hi):
             log.debug("SKIP %s — RSI %.1f outside [%.0f, %.0f] for %s", symbol, rsi_val, rsi_lo, rsi_hi, direction)
-            return None
+            return None, "rsi"
 
         # --- Volume filter (with optional session-aware override) ---
         vol_threshold = (
@@ -197,7 +206,7 @@ class SignalScanner:
         )
         if volume_ratio < vol_threshold:
             log.debug("SKIP %s — volume ratio %.2f < %.1f", symbol, volume_ratio, vol_threshold)
-            return None
+            return None, "volume"
 
         # --- Relative strength vs SPY (longs only) ---
         if (
@@ -211,7 +220,7 @@ class SignalScanner:
                     "SKIP %s — relative strength %.2f%% <= SPY %.2f%%",
                     symbol, ticker_20d * 100, self._spy_return_20d * 100,
                 )
-                return None
+                return None, "rel_strength"
 
         # --- Near-high proximity filter (longs only; only when enough bars) ---
         lookback = s.near_high_lookback
@@ -222,7 +231,7 @@ class SignalScanner:
                     "SKIP %s — price %.2f is >%.0f%% below %d-day high %.2f",
                     symbol, price, s.near_high_max_drawdown * 100, lookback, high_n,
                 )
-                return None
+                return None, "near_high"
 
         conviction = _compute_conviction(rsi_val, volume_ratio, direction, s)
 
@@ -240,7 +249,7 @@ class SignalScanner:
             rsi=round(rsi_val, 2),
             volume_ratio=round(volume_ratio, 3),
             current_price=round(price, 4),
-        )
+        ), "pass"
 
 
 # ---------------------------------------------------------------------------
