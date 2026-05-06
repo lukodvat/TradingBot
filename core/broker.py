@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Optional
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+from alpaca.trading.enums import OrderClass, OrderSide, OrderStatus, TimeInForce
 from alpaca.trading.models import Order, Position, TradeAccount
 from alpaca.trading.requests import (
     ClosePositionRequest,
@@ -270,7 +270,7 @@ class BrokerClient:
             )
             result = self._client.get_orders(filter=req)
             orders = list(result) if result else []
-            return [o for o in orders if str(o.status) == "filled"]
+            return [o for o in orders if o.status == OrderStatus.FILLED]
         except Exception as exc:
             log.error("get_filled_orders_since failed: %s", exc)
             return []

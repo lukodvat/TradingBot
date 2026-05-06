@@ -544,7 +544,7 @@ def run_quant_job(
                     qty=sizing.qty,
                     limit_price=sizing.limit_price,
                     stop_price=sizing.stop_price,
-                    status=str(order.status),
+                    status=getattr(order.status, "value", str(order.status)),
                     submitted_at=run_timestamp,
                     run_timestamp=run_timestamp,
                 )
